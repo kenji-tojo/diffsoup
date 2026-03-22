@@ -27,6 +27,8 @@ find_package(nanobind CONFIG REQUIRED)
 find_package(CUDAToolkit REQUIRED)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+set(CMAKE_CUDA_ARCHITECTURES 89)
+
 # ----------------------------------
 # Build nanobind module inside package
 # ----------------------------------

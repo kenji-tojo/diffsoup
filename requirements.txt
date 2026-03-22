@@ -1,0 +1,10 @@
+numpy
+imageio
+torchvision
+matplotlib
+tqdm
+pytorch_msssim
+lpips
+scipy
+open3d
+trimesh
