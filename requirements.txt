@@ -8,3 +8,4 @@ lpips
 scipy
 open3d
 trimesh
+scikit-image
