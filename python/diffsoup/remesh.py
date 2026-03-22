@@ -1,58 +1,53 @@
+# python/diffsoup/remesh.py
+"""Adaptive triangle-soup subdivision (world-space and clip-space)."""
+
 import numpy as np
 import torch
 from . import _core
 
+
 def split_triangle_soup(
-    verts: torch.Tensor,   # [num_verts, 3], float32
-    faces: torch.Tensor,   # [num_faces, 3], int32
+    verts: torch.Tensor,   # (N, 3), float32
+    faces: torch.Tensor,   # (M, 3), int32
     num_splits: int,
     tau: float = 0.0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """
-    Split a triangle soup mesh by repeatedly bisecting the longest edges.
+    """Split a triangle soup by repeatedly bisecting the longest edge.
 
     Args:
-        verts: [N, 3] float32 tensor of vertex positions.
-        faces: [M, 3] int32 tensor of triangle vertex indices.
-        num_splits: maximum number of edge splits; use -1 for “until” mode
-                    (will require tau > 0 in the C++ code).
-        tau: stop once the longest edge length <= tau (0 disables threshold).
+        verts:      ``(N, 3)`` float32 vertex positions.
+        faces:      ``(M, 3)`` int32 triangle indices.
+        num_splits: Maximum number of edge bisections.  Use ``-1`` together
+                    with ``tau > 0`` for threshold-only mode.
+        tau:        Stop once the longest remaining edge ≤ ``tau``
+                    (0 disables the threshold).
 
     Returns:
-        out_verts:   [N', 3] float32 tensor
-        out_faces:   [M', 3] int32 tensor
-        face_mapping:[M']    int32 tensor mapping each output face to its input face id
-        face_flags:  [M']    int32 tensor, 1 = exactly original face, else 0
+        out_verts:    ``(N', 3)`` float32 vertex positions.
+        out_faces:    ``(M', 3)`` int32 triangle indices.
+        face_mapping: ``(M',)`` int32 — maps each output face to its input
+                      face index.
+        face_flags:   ``(M',)`` int32 — 1 if the face is an exact copy of the
+                      original, 0 otherwise.
     """
-    assert verts.ndim == 2 and verts.shape[1] == 3, "verts must be [N,3]"
-    assert faces.ndim == 2 and faces.shape[1] == 3, "faces must be [M,3]"
+    assert verts.ndim == 2 and verts.shape[1] == 3, "verts must be (N, 3)"
+    assert faces.ndim == 2 and faces.shape[1] == 3, "faces must be (M, 3)"
 
     dev = verts.device
+    v_np = verts.float().detach().cpu().contiguous().numpy()
+    f_np = faces.to(torch.int32).detach().cpu().contiguous().numpy()
 
-    # Ensure correct dtypes & CPU numpy for nanobind
-    v_np = (verts if verts.dtype == torch.float32 else verts.float()).detach().cpu().contiguous().numpy()
-    f_np = (faces if faces.dtype == torch.int32   else faces.to(torch.int32)).detach().cpu().contiguous().numpy()
+    out_v, out_f, out_map, out_flag = _core.split_triangle_soup(
+        v_np, f_np, int(num_splits), float(tau)
+    )
 
-    # Call nanobind core: returns NumPy arrays (C-contiguous)
-    out_v_np, out_f_np, out_map_np, out_flag_np = _core.split_triangle_soup(v_np, f_np, int(num_splits), float(tau))
+    return (
+        torch.from_numpy(out_v).to(device=dev, dtype=torch.float32),
+        torch.from_numpy(out_f).to(device=dev, dtype=torch.int32),
+        torch.from_numpy(out_map).to(device=dev, dtype=torch.int32),
+        torch.from_numpy(out_flag).to(device=dev, dtype=torch.int32),
+    )
 
-    # Convert back to torch (shares memory; safe since arrays are newly created)
-    out_verts   = torch.from_numpy(out_v_np).to(device=dev)
-    out_faces   = torch.from_numpy(out_f_np).to(device=dev)
-    face_mapping= torch.from_numpy(out_map_np).to(device=dev)
-    face_flags  = torch.from_numpy(out_flag_np).to(device=dev)
-
-    # Sanity: enforce expected dtypes on the way out (in case NumPy defaulted oddly)
-    if out_verts.dtype != torch.float32:
-        out_verts = out_verts.to(torch.float32)
-    if out_faces.dtype != torch.int32:
-        out_faces = out_faces.to(torch.int32)
-    if face_mapping.dtype != torch.int32:
-        face_mapping = face_mapping.to(torch.int32)
-    if face_flags.dtype != torch.int32:
-        face_flags = face_flags.to(torch.int32)
-
-    return out_verts, out_faces, face_mapping, face_flags
 
 def split_triangle_soup_until(
     verts: torch.Tensor,
@@ -60,114 +55,86 @@ def split_triangle_soup_until(
     tau: float,
     hard_cap: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Split until all edges ≤ ``tau``.
+
+    Args:
+        verts:    ``(N, 3)`` float32 vertex positions.
+        faces:    ``(M, 3)`` int32 triangle indices.
+        tau:      Maximum allowed edge length.
+        hard_cap: Optional upper bound on the number of bisections.
+
+    Returns:
+        Same four-tuple as :func:`split_triangle_soup`.
     """
-    Convenience wrapper: split until all edges <= tau.
-    `hard_cap` optionally limits the total splits (defensive).
-    """
-    # num_splits = -1 engages the "until" mode on the C++ side.
     ns = -1 if hard_cap is None else int(hard_cap)
     return split_triangle_soup(verts, faces, ns, tau=float(tau))
 
-def expand_by_index(
-    source: torch.Tensor,
-    index_map: torch.Tensor,
-) -> torch.Tensor:
-    """
-    Create a 'child' tensor by gathering rows (or first-dim slices) from `source`
-    according to `index_map`.
+
+def split_triangle_soup_clip(
+    resolution: tuple[int, int],
+    mvp: torch.Tensor,           # (4, 4)
+    verts: torch.Tensor,         # (N, 3)
+    faces: torch.Tensor,         # (M, 3)
+    valid_faces: torch.Tensor,   # (M,)
+    num_splits: int,
+    tau_ratio: float = 0.0,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Split a triangle soup based on image-space (clip-space) edge lengths.
+
+    Pipeline:  world ``(N, 3)`` → clip ``(N, 4)`` via MVP → split in
+    clip space → back to world ``(N', 3)``.
+
+    Image-space length is measured in normalised device coordinates
+    ``(x/w, y/w)`` with the x axis scaled by ``W/H`` so that the metric
+    unit equals one image height.
+
+    Edges whose **both** endpoints lie outside the NDC cube ``[-1, 1]³``
+    are skipped.
 
     Args:
-        source (torch.Tensor): Tensor of shape (N, ...) — the parent features.
-        index_map (torch.Tensor): Long tensor of shape (N') — indices into [0, N-1],
-                                  specifying the parent of each new element.
+        resolution:  ``(H, W)`` image resolution.
+        mvp:         ``(4, 4)`` model-view-projection matrix (row-major).
+        verts:       ``(N, 3)`` float32 world-space positions.
+        faces:       ``(M, 3)`` int32 triangle indices.
+        valid_faces: ``(M,)`` int32 mask (1 = consider for splitting).
+        num_splits:  Maximum bisections (``-1`` for threshold-only).
+        tau_ratio:   Threshold in image-height units (0 disables).
 
     Returns:
-        torch.Tensor: Tensor of shape (N', ...) where each entry is copied from
-                      source[index_map[i]].
-
-    Example:
-        >>> parents = torch.randn(5, 3, 4)
-        >>> mapping = torch.tensor([0, 2, 2, 4, 1])
-        >>> children = expand_by_index(parents, mapping)
-        >>> children.shape
-        torch.Size([5, 3, 4])
-    """
-    if not torch.is_tensor(source):
-        raise TypeError("`source` must be a torch.Tensor.")
-    if not torch.is_tensor(index_map):
-        raise TypeError("`index_map` must be a torch.Tensor.")
-
-    if index_map.dtype != torch.long:
-        index_map = index_map.to(torch.long)
-
-    index_map = index_map.to(source.device)
-
-    N = source.size(0)
-    if torch.any((index_map < 0) | (index_map >= N)):
-        raise ValueError("`index_map` contains out-of-range indices.")
-
-    # Works for any trailing shape
-    result = source.index_select(0, index_map)
-    return result
-
-
-# TODO: this function needs refactoring
-def split_triangle_soup_clip(
-    resolution: tuple[int, int], # (H, W) image resolution.
-    mvp: torch.Tensor,           # [4,4] MVP (row-major). Applied as v_clip = v_h @ mvp^T
-    verts: torch.Tensor,         # [N,3] world-space xyz (float32)
-    faces: torch.Tensor,         # [M,3] int32
-    valid_faces: torch.Tensor,   # [M,]  int32
-    num_splits: int,
-    tau_ratio: float = 0.0,      # tau as ratio of image height
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """
-    Split a triangle soup based on an image-space edge lengths.
-
-    Pipeline:
-      world [N,3] --(MVP)--> clip [N,4] --(_core.split_triangle_soup_clip)-->
-      clip' [N',4] --(inv MVP + divide)--> world' [N',3]
-
-    Notes:
-      • Image-space length is measured on NDC (x/w, y/w), with dx scaled by W/H (“image-height units”).
-      • Edges with BOTH endpoints outside the NDC cube [-1,1]^3 are ignored.
-      • `tau_ratio` compares directly to that metric (height = 1.0).
+        Same four-tuple as :func:`split_triangle_soup`.
     """
     H, W = resolution
-    assert mvp.shape == (4, 4), "mvp must be [4,4]"
-    assert verts.ndim == 2 and verts.shape[1] == 3, "verts must be [N,3]"
-    assert faces.ndim == 2 and faces.shape[1] == 3, "faces must be [M,3]"
-    assert valid_faces.shape == (faces.shape[0],),  "valid_faces must be [M,]"
+    assert mvp.shape == (4, 4)
+    assert verts.ndim == 2 and verts.shape[1] == 3
+    assert faces.ndim == 2 and faces.shape[1] == 3
+    assert valid_faces.shape == (faces.shape[0],)
 
     dev = verts.device
-    dtype = torch.float32
 
-    # Dtypes / contiguity
-    verts = (verts if verts.dtype == dtype else verts.to(dtype)).contiguous()
-    faces = (faces if faces.dtype == torch.int32 else faces.to(torch.int32)).contiguous()
-    valid_faces = (valid_faces if valid_faces.dtype == torch.int32 else valid_faces.to(torch.int32)).contiguous()
-    mvp = (mvp if mvp.dtype == dtype else mvp.to(dtype)).contiguous()
+    verts = verts.float().contiguous()
+    faces = faces.to(torch.int32).contiguous()
+    valid_faces = valid_faces.to(torch.int32).contiguous()
+    mvp = mvp.float().contiguous()
 
-    # Backend call (clip-space)
     aspect_wh = float(W) / float(H)
-    mvp_np = mvp.detach().cpu().contiguous().numpy()
-    v_np = verts.detach().cpu().contiguous().numpy()
-    f_np = faces.detach().cpu().contiguous().numpy()
-    vf_np = valid_faces.detach().cpu().contiguous().numpy()
-
-    out_v_np, out_f_np, out_map_np, out_flag_np = _core.split_triangle_soup_clip(
-        mvp_np, v_np, f_np, vf_np, int(num_splits), float(tau_ratio), float(aspect_wh)
+    out_v, out_f, out_map, out_flag = _core.split_triangle_soup_clip(
+        mvp.detach().cpu().numpy(),
+        verts.detach().cpu().numpy(),
+        faces.detach().cpu().numpy(),
+        valid_faces.detach().cpu().numpy(),
+        int(num_splits),
+        float(tau_ratio),
+        aspect_wh,
     )
 
-    # Convert back to torch on original device
-    out_verts    = torch.from_numpy(out_v_np).to(device=dev, dtype=dtype)
-    out_faces    = torch.from_numpy(out_f_np).to(device=dev, dtype=torch.int32)
-    face_mapping = torch.from_numpy(out_map_np).to(device=dev, dtype=torch.int32)
-    face_flags   = torch.from_numpy(out_flag_np).to(device=dev, dtype=torch.int32)
+    return (
+        torch.from_numpy(out_v).to(device=dev, dtype=torch.float32),
+        torch.from_numpy(out_f).to(device=dev, dtype=torch.int32),
+        torch.from_numpy(out_map).to(device=dev, dtype=torch.int32),
+        torch.from_numpy(out_flag).to(device=dev, dtype=torch.int32),
+    )
 
-    return out_verts, out_faces, face_mapping, face_flags
 
-# TODO: this one too
 def split_triangle_soup_clip_until(
     resolution: tuple[int, int],
     mvp: torch.Tensor,
@@ -177,11 +144,54 @@ def split_triangle_soup_clip_until(
     tau_ratio: float,
     hard_cap: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """
-    Convenience wrapper: split until all image-space edges <= tau_ratio.
-    `hard_cap` optionally limits total splits.
+    """Split until all image-space edges ≤ ``tau_ratio``.
+
+    Args:
+        resolution:  ``(H, W)`` image resolution.
+        mvp:         ``(4, 4)`` MVP matrix.
+        verts:       ``(N, 3)`` float32 world-space positions.
+        faces:       ``(M, 3)`` int32 triangle indices.
+        valid_faces: ``(M,)`` int32 mask.
+        tau_ratio:   Threshold in image-height units.
+        hard_cap:    Optional upper bound on the number of bisections.
+
+    Returns:
+        Same four-tuple as :func:`split_triangle_soup`.
     """
     ns = -1 if hard_cap is None else int(hard_cap)
     return split_triangle_soup_clip(
         resolution, mvp, verts, faces, valid_faces, ns, tau_ratio
     )
+
+
+def expand_by_index(
+    source: torch.Tensor,
+    index_map: torch.Tensor,
+) -> torch.Tensor:
+    """Gather rows from ``source`` according to ``index_map``.
+
+    Useful for propagating per-face features through a subdivision step:
+    if face *j* in the output descends from face *i* in the input, set
+    ``index_map[j] = i`` and call this function to copy the features.
+
+    Args:
+        source:    ``(N, ...)`` tensor of parent features.
+        index_map: ``(N',)`` long tensor of indices into ``[0, N)``.
+
+    Returns:
+        ``(N', ...)`` tensor with ``result[j] = source[index_map[j]]``.
+    """
+    if not torch.is_tensor(source):
+        raise TypeError("`source` must be a torch.Tensor.")
+    if not torch.is_tensor(index_map):
+        raise TypeError("`index_map` must be a torch.Tensor.")
+
+    if index_map.dtype != torch.long:
+        index_map = index_map.to(torch.long)
+    index_map = index_map.to(source.device)
+
+    N = source.size(0)
+    if torch.any((index_map < 0) | (index_map >= N)):
+        raise ValueError("`index_map` contains out-of-range indices.")
+
+    return source.index_select(0, index_map)

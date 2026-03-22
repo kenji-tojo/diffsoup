@@ -1,4 +1,6 @@
 # python/diffsoup/__init__.py
+"""DiffSoup: differentiable triangle-soup rendering and optimisation."""
+
 from __future__ import annotations
 
 import torch
@@ -8,11 +10,10 @@ from . import optimize
 
 from .rasterize import (
     edge_grad,
-    radiance_field_loss,
+    opacity_aux_loss,
     encode_view_dir_sh2,
     encode_view_dir_freq,
     count_triangle_ids,
-    rasterize_mobilenerf,
 )
 
 from .multires import (

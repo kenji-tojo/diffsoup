@@ -1,12 +1,12 @@
+// src/remesh.h
+// Adaptive triangle-soup subdivision in world space.
+
 #pragma once
 
 #include <vector>
-#include <algorithm>
 #include <queue>
 #include <cmath>
 #include <cstring>
-#include <iostream>
-#include <iomanip>
 
 namespace diffsoup {
 
@@ -16,23 +16,22 @@ private:
     std::vector<int>   triangles;  // flat i0,i1,i2
     int originalNumTriangles;
 
-    // current-face (triangle index) -> original-face id it descends from
+    // current-face → original-face id it descends from
     std::vector<int> faceMapping;
 
-    // Tracks whether the current triangle is *exactly* an original (never modified)
-    // size == current number of triangles; 1 = same as original, 0 = modified/new
+    // 1 = current triangle is exactly the original (never modified), 0 otherwise
     std::vector<unsigned char> sameAsOriginal;
 
-    // Per-triangle "version". Every time we edit a triangle, bump its gen.
+    // Per-triangle generation counter (bumped on every edit)
     std::vector<int> triGen;
 
-    // Per-triangle origin: which original face this (current) triangle descends from.
+    // Per-triangle origin: which original face this triangle descends from
     std::vector<int> triOrigin;
 
     struct EdgeRef {
         int tri;        // triangle index
-        int e;          // which edge: 0:(v0->v1), 1:(v1->v2), 2:(v2->v0)
-        float len2;     // length squared at the time of push
+        int e;          // edge: 0:(v0→v1), 1:(v1→v2), 2:(v2→v0)
+        float len2;     // squared length at the time of push
         int gen;        // triangle generation when this was computed
         bool operator<(const EdgeRef& other) const { return len2 < other.len2; }
     };
@@ -77,8 +76,6 @@ private:
     }
 
     void enqueueTriangleEdges(int t, std::priority_queue<EdgeRef>& pq) const;
-
-    // Split triangle t along edge e (0,1,2). Returns index of the new triangle.
     int splitTriangleEdge(int t, int e);
 
 public:
@@ -86,8 +83,6 @@ public:
 
     void splitLongEdges(int numSplits) { splitLongEdges(numSplits, 0.0f); }
     void splitLongEdges(int numSplits, float tau);
-
-    // New: split until all edges are <= tau (with optional hard cap safety)
     void splitLongEdgesUntil(float tau, int hardCap = -1) { splitLongEdges(hardCap, tau); }
 
     int getNumVertices() const;
@@ -95,12 +90,7 @@ public:
     int getOriginalNumTriangles() const;
 
     void exportToFlatArrays(float* outVerts, int* outFaces) const;
-
-    // mapping[t] = original face id that current triangle t descends from
     void getFaceMapping(int* outMapping) const;
-
-    // outFlags[t] = 1 if current triangle t is exactly the original triangle
-    // (i.e., never modified), else 0
     void getSameAsOriginal(int* outFlags) const;
 };
 

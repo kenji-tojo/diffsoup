@@ -1,3 +1,7 @@
+// src/cuda/rasterize.cuh
+// CUDA declarations for software rasterisation, depth testing, edge gradients,
+// and the stochastic opacity masking auxiliary loss backward pass.
+
 #pragma once
 
 namespace diffsoup {
@@ -52,7 +56,7 @@ void backward_edge_grad(
     const int* __restrict__ tri              // [T, 3]
 );
 
-void backward_radiance_field_loss(
+void backward_opacity_aux_loss(
     int B, int H, int W, int C,
     const float* __restrict__ color,         // [B, H, W, C]
     const float* __restrict__ target,        // [B, H, W, C]
@@ -62,29 +66,6 @@ void backward_radiance_field_loss(
     const float* __restrict__ frag_attrs,    // [num_frags, 4]
     const float* __restrict__ frag_alpha,    // [num_frags]
     float* __restrict__ grad_frag_alpha      // [num_frags]
-);
-
-void frag_alpha_mobilenerf(
-    int num_frags,
-    const float* frag_attrs, // [num_frags, 4]
-    const float* uvs,        // [V, 2]
-    const int* tri,          // [T, 3]
-    int texH,
-    int texW,
-    const float* feat0,      // [texH, texW, 4]
-    float* frag_alpha        // [num_frags,]
-);
-
-void lookup_feats_mobilenerf(
-    int B, int H, int W,
-    float* rast,         // [B, H, W, 4]
-    const float* uvs,    // [V, 2]
-    const int* tri,      // [T, 3]
-    int texH,
-    int texW,
-    const float* feat0,  // [texH, texW, 4]
-    const float* feat1,  // [texH, texW, 4]
-    float* image         // [H, W, 8]
 );
 
 } // namespace cuda

@@ -1,5 +1,5 @@
 # examples/utils.py
-# Shared utilities for DiffSoup example scripts.
+"""Shared utilities for DiffSoup example scripts."""
 
 from __future__ import annotations
 
@@ -18,7 +18,11 @@ import torchvision.transforms.functional as TF
 # =====================================================================
 
 def read_points3D(scene_root: str) -> np.ndarray:
-    """Read COLMAP points3D from text or binary format. Returns (N, 3) float32."""
+    """Read COLMAP points3D from text or binary format.
+
+    Returns:
+        ``(N, 3)`` float32 array of XYZ positions.
+    """
     spr = _colmap_root(scene_root)
     txtp = os.path.join(spr, "points3D.txt")
     binp = os.path.join(spr, "points3D.bin")
@@ -55,7 +59,11 @@ def read_points3D(scene_root: str) -> np.ndarray:
 # =====================================================================
 
 def farthest_point_downsample(points: np.ndarray, n: int) -> np.ndarray:
-    """Farthest-point sampling via Open3D. Returns (n, 3) float32 subset."""
+    """Farthest-point sampling via Open3D.
+
+    Returns:
+        ``(n, 3)`` float32 subset.
+    """
     import open3d as o3d
 
     pcd = o3d.geometry.PointCloud()
@@ -74,7 +82,10 @@ def opengl_P_from_K(
     z_near: float = 0.01,
     z_far: float = 1000.0,
 ) -> torch.Tensor:
-    """OpenGL projection matrix from intrinsics K for NDC in [-1, 1]."""
+    """OpenGL projection matrix from a 3×3 intrinsics matrix ``K``.
+
+    Maps to NDC in ``[-1, 1]``.
+    """
     H, W = image_size
     fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
     P = torch.zeros(4, 4, dtype=K.dtype, device=K.device)
@@ -96,13 +107,14 @@ def mvp_from_K_Tcw(
     z_far: float = 1000.0,
     flip_z: bool = False,
 ) -> torch.Tensor:
-    """Build MVP = P @ V from camera intrinsics and world-to-camera transform."""
+    """Build ``MVP = P @ V`` from camera intrinsics and world-to-camera transform."""
     P = opengl_P_from_K(K, image_size, z_near, z_far)
     V = Tcw.clone()
     if flip_z:
         ZF = torch.tensor(
             [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]],
-            dtype=V.dtype, device=V.device,
+            dtype=V.dtype,
+            device=V.device,
         )
         V = ZF @ V
     return P @ V
@@ -121,9 +133,9 @@ def _qvec2rotmat(q: np.ndarray) -> np.ndarray:
     w, x, y, z = q
     return np.array(
         [
-            [1 - 2 * y * y - 2 * z * z, 2 * x * y - 2 * z * w, 2 * x * z + 2 * y * w],
-            [2 * x * y + 2 * z * w, 1 - 2 * x * x - 2 * z * z, 2 * y * z - 2 * x * w],
-            [2 * x * z - 2 * y * w, 2 * y * z + 2 * x * w, 1 - 2 * x * x - 2 * y * y],
+            [1 - 2*y*y - 2*z*z, 2*x*y - 2*z*w,     2*x*z + 2*y*w],
+            [2*x*y + 2*z*w,     1 - 2*x*x - 2*z*z, 2*y*z - 2*x*w],
+            [2*x*z - 2*y*w,     2*y*z + 2*x*w,     1 - 2*x*x - 2*y*y],
         ],
         dtype=np.float64,
     )
@@ -171,7 +183,9 @@ def _read_cameras_bin(path: str) -> Dict[int, dict]:
             model = _MODEL_ID_TO_NAME.get(model_id, f"MODEL_{model_id}")
             np_ = _MODEL_NUM_PARAMS.get(model, 4)
             params = list(_fread(f, "<" + "d" * np_))
-            cams[cam_id] = {"model": model, "w": int(width), "h": int(height), "params": params}
+            cams[cam_id] = {
+                "model": model, "w": int(width), "h": int(height), "params": params
+            }
     return cams
 
 
@@ -202,7 +216,7 @@ def _read_images_txt(path: str) -> List[dict]:
         cam_id = int(toks[8])
         name = toks[9]
         if i < len(lines) and not lines[i].startswith("#"):
-            i += 1  # skip correspondences
+            i += 1  # skip correspondences line
         imgs.append({
             "qvec": np.array([qw, qx, qy, qz], dtype=np.float64),
             "tvec": np.array([tx, ty, tz], dtype=np.float64),
@@ -258,15 +272,18 @@ def _intrinsics_from_camera(cam: dict) -> Tuple[torch.Tensor, int, int]:
     if model in ("PINHOLE", "OPENCV", "OPENCV_FISHEYE", "FULL_OPENCV"):
         fx, fy, cx, cy = p[0], p[1], p[2], p[3]
     elif model in ("SIMPLE_PINHOLE", "SIMPLE_RADIAL", "RADIAL"):
-        fx = fy = p[0]; cx, cy = p[1], p[2]
+        fx = fy = p[0]
+        cx, cy = p[1], p[2]
     else:
         fx, fy, cx, cy = p[0], p[1], p[2], p[3]
-    K = torch.tensor([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]], dtype=torch.float32)
+    K = torch.tensor(
+        [[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]], dtype=torch.float32
+    )
     return K, h, w
 
 
 def _image_folder_name(downscale: int) -> str:
-    """Map downscale factor to folder name: 0 or 1 → 'images', 2 → 'images_2', etc."""
+    """Map downscale factor to folder name: 0 or 1 → ``images``, 2 → ``images_2``, etc."""
     if downscale <= 1:
         return "images"
     return f"images_{downscale}"
@@ -282,21 +299,22 @@ def load_mipnerf360_scene(
     device: Optional[torch.device] = None,
     linearize: bool = False,
 ) -> Dict:
-    """
-    Load a MipNeRF 360 scene in LLFF layout with 3DGS-compatible train/test split.
+    """Load a MipNeRF-360 COLMAP scene with a 3DGS-compatible train/test split.
 
     Args:
-        scene_root: Path to scene directory.
-        split: "train" or "test".
-        holdout: Every holdout-th view goes to test (default 8, matching 3DGS).
-        downscale: Image downscale factor. 0 or 1 = ``images/``, 2 = ``images_2/``,
-                   4 = ``images_4/``, 8 = ``images_8/``.
-        device: Target device for tensors (None = CPU).
-        linearize: If True, convert sRGB to linear.
+        scene_root: Path to the scene directory.
+        split:      ``"train"`` or ``"test"``.
+        holdout:    Every *holdout*-th view goes to the test set (default 8,
+                    matching 3DGS).
+        downscale:  Image downscale factor.  0 or 1 → ``images/``,
+                    2 → ``images_2/``, 4 → ``images_4/``, etc.
+        device:     Target device for tensors (``None`` = CPU).
+        linearize:  If ``True``, convert sRGB images to linear.
 
     Returns:
-        Dict with keys: frames, K, H, W, orig_H, orig_W, folder.
-        Each frame dict has: c2w, Tcw, image, img_path.
+        Dict with keys ``frames``, ``K``, ``H``, ``W``, ``orig_H``,
+        ``orig_W``, ``folder``.  Each frame dict contains ``c2w``, ``Tcw``,
+        ``image``, and ``img_path``.
     """
     spr = _colmap_root(scene_root)
     cams = _read_cameras(spr)
@@ -357,8 +375,10 @@ def load_mipnerf360_scene(
             img = img[..., None].expand(-1, -1, 3)
         if (img.shape[0], img.shape[1]) != (out_H, out_W):
             img = TF.resize(
-                img.permute(2, 0, 1), [out_H, out_W],
-                interpolation=TF.InterpolationMode.BICUBIC, antialias=True,
+                img.permute(2, 0, 1),
+                [out_H, out_W],
+                interpolation=TF.InterpolationMode.BICUBIC,
+                antialias=True,
             ).permute(1, 2, 0)
         if linearize:
             a = (img <= 0.04045).float()
@@ -370,9 +390,9 @@ def load_mipnerf360_scene(
             "image": img,
             "img_path": img_path,
         }
-        if device:
+        if device is not None:
             for k in ("c2w", "Tcw", "image"):
-                if k in item and torch.is_tensor(item[k]):
+                if torch.is_tensor(item[k]):
                     item[k] = item[k].to(device)
         frames.append(item)
 
@@ -383,3 +403,143 @@ def load_mipnerf360_scene(
         "orig_H": orig_H, "orig_W": orig_W,
         "folder": folder,
     }
+
+
+# =====================================================================
+#  Shared training helpers
+# =====================================================================
+
+def project_vertices(
+    verts: torch.Tensor,
+    mvp: torch.Tensor,
+) -> torch.Tensor:
+    """Project world-space vertices to clip space.
+
+    Args:
+        verts: ``(V, 3)`` float32 vertex positions.
+        mvp:   ``(B, 4, 4)`` model-view-projection matrices.
+
+    Returns:
+        ``(B, V, 4)`` float32 homogeneous clip-space positions.
+    """
+    V_h = torch.cat([verts, torch.ones_like(verts[:, :1])], dim=-1)
+    return torch.einsum("bij,nj->bni", mvp, V_h).contiguous()
+
+
+def psnr_fn(pred: torch.Tensor, gt: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    """Peak signal-to-noise ratio between two linear-light images."""
+    mse = (pred - gt).pow(2).mean().clamp_min(eps)
+    return 10.0 * torch.log10(1.0 / mse)
+
+
+def exp_decay_mult(
+    step: int,
+    total_steps: int,
+    final_mult: float = 0.01,
+) -> float:
+    """Exponential learning-rate decay multiplier."""
+    step = max(1, min(step, total_steps))
+    return final_mult ** (step / float(total_steps))
+
+
+def count_visible_triangles(
+    resolution: Tuple[int, int],
+    MVPs: torch.Tensor,
+    V: torch.Tensor,
+    F: torch.Tensor,
+    level: int,
+    alpha_src: torch.Tensor,
+    batch_size: int = 16,
+) -> torch.Tensor:
+    """Count per-triangle visibility across a set of views.
+
+    Args:
+        resolution: ``(H, W)`` rasterisation resolution.
+        MVPs:       ``(N, 4, 4)`` MVP matrices for every training view.
+        V:          ``(Nv, 3)`` vertex positions.
+        F:          ``(Nf, 3)`` face indices.
+        level:      Multi-resolution level for opacity lookup.
+        alpha_src:  Accumulated opacity features (after sigmoid).
+        batch_size: Views processed per rasterisation call.
+
+    Returns:
+        ``(Nf,)`` long tensor of per-triangle pixel counts summed over views.
+    """
+    import diffsoup as ds
+
+    H, W = resolution
+    num_views = MVPs.shape[0]
+    num_batches = (num_views + batch_size - 1) // batch_size
+    count = torch.zeros(F.shape[0], dtype=torch.long, device="cuda")
+    for i in range(num_batches):
+        start = i * batch_size
+        end = start + batch_size if i < num_batches - 1 else num_views
+        V_clip = project_vertices(V, MVPs[start:end])
+        rast = ds.rasterize_multires_triangle_alpha(
+            (H, W), V_clip, F, level, alpha_src, stochastic=False,
+        )
+        count += ds.count_triangle_ids(rast, F.shape[0])
+    return count
+
+
+def build_keep_map(counts: torch.Tensor, remove: int) -> torch.Tensor:
+    """Select faces to keep after pruning the *remove* least-visible ones."""
+    sorted_idx = torch.argsort(counts, stable=True)
+    keep_idx = sorted_idx[remove:]
+    keep_idx, _ = torch.sort(keep_idx)
+    return keep_idx
+
+
+def split_edges_from_training_views(
+    resolution: Tuple[int, int],
+    MVPs: torch.Tensor,
+    V: torch.Tensor,
+    F: torch.Tensor,
+    Rmax: int,
+    alpha_acc: torch.Tensor,
+    tau_ratio: float,
+    num_views_cap: int,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Adaptively split long screen-space edges observed across training views.
+
+    A random subset (up to ``num_views_cap``) of training views is selected.
+    For each view, visible triangles are identified via rasterisation and
+    their edges are split in clip space until no edge exceeds ``tau_ratio``
+    image heights.
+
+    Returns:
+        V, F, face_map — updated vertices, faces, and an index tensor mapping
+        each new face back to its parent in the *original* ``F``.
+    """
+    import diffsoup as ds
+
+    H, W = resolution
+    num_views = MVPs.shape[0]
+    num_original_faces = F.shape[0]
+    dev = V.device
+
+    perm = torch.randperm(num_views, device=dev, dtype=torch.long)
+    perm_MVPs = MVPs[perm[: min(num_views, num_views_cap)]]
+
+    V_clip = project_vertices(V, perm_MVPs)
+    rast = ds.rasterize_multires_triangle_alpha(
+        (H, W), V_clip, F, Rmax, alpha_acc, stochastic=False,
+    )
+
+    fMap = torch.arange(F.shape[0], device=dev, dtype=torch.long)
+
+    for i in range(perm_MVPs.shape[0]):
+        rast_i = rast[i]
+        face_idx = (rast_i[rast_i[..., -1] > 0][..., -1].int() - 1).unique().ravel()
+        assert torch.all(face_idx >= 0) and torch.all(face_idx < num_original_faces)
+
+        valid_faces = torch.zeros(num_original_faces, dtype=torch.int32, device=dev)
+        valid_faces[face_idx] = 1
+        valid_faces = valid_faces[fMap].contiguous()
+
+        V, F, fMap_next, _ = ds.split_triangle_soup_clip_until(
+            (H, W), perm_MVPs[i], V, F, valid_faces, tau_ratio=tau_ratio,
+        )
+        fMap = fMap[fMap_next].contiguous()
+
+    return V, F, fMap

@@ -1,8 +1,8 @@
 # examples/02_synthetic.py
-# Synthetic / MobileNeRF scene optimization with DiffSoup.
+# Synthetic / MobileNeRF scene optimisation with DiffSoup.
 #
 # Loads a MobileNeRF mesh (shape.obj) and NeRF-synthetic camera poses,
-# then optimizes a triangle-soup radiance field.
+# then optimises a triangle-soup radiance field.
 #
 # Usage:
 #   # NeRF Synthetic (Blender)
@@ -16,9 +16,9 @@
 # Dependencies (beyond diffsoup):
 #   pip install imageio tqdm pytorch-msssim scikit-image matplotlib
 #
-# Note: LPIPS is intentionally excluded from this example. For fair comparison
-# with other methods, ensure you use a consistent LPIPS model and weights
-# (e.g., VGG vs AlexNet, v0.0 vs v0.1) across all baselines.
+# Note: LPIPS is intentionally excluded from this example.  For fair
+# comparison with other methods, ensure you use a consistent LPIPS model
+# and weights (e.g. VGG vs AlexNet, v0.0 vs v0.1) across all baselines.
 
 from __future__ import annotations
 
@@ -42,6 +42,13 @@ from torch.optim import Adam
 from tqdm import tqdm
 
 import diffsoup as ds
+from utils import (
+    project_vertices,
+    exp_decay_mult,
+    count_visible_triangles,
+    build_keep_map,
+    split_edges_from_training_views,
+)
 
 # ── Reproducibility ──────────────────────────────────────────────────
 
@@ -59,11 +66,11 @@ NEAR, FAR = 0.1, 10.0
 @dataclass
 class CameraView:
     file_path: Path
-    c2w: np.ndarray       # 4x4 camera-to-world
-    K: np.ndarray          # 3x3 intrinsics
-    P: np.ndarray          # 4x4 projection
-    V: np.ndarray          # 4x4 view (world-to-camera)
-    MVP: np.ndarray        # 4x4
+    c2w: np.ndarray       # 4×4 camera-to-world
+    K: np.ndarray          # 3×3 intrinsics
+    P: np.ndarray          # 4×4 projection
+    V: np.ndarray          # 4×4 view (world-to-camera)
+    MVP: np.ndarray        # 4×4
     camera_angle_x: float
     width: int
     height: int
@@ -80,7 +87,7 @@ class Mesh:
 # ── Helpers ──────────────────────────────────────────────────────────
 
 def detect_image_size(test_dir: Path) -> Tuple[int, int]:
-    """Find a non-depth PNG in test_dir and return (width, height)."""
+    """Find a non-depth PNG in *test_dir* and return ``(width, height)``."""
     pngs = sorted(test_dir.glob("*.png"))
     for p in pngs:
         if "depth" not in p.name:
@@ -146,15 +153,16 @@ def load_obj_mesh(obj_path: Path) -> Mesh:
 
 
 def load_cameras(
-    json_path: Path, png_suffix: bool = True,
+    json_path: Path,
+    png_suffix: bool = True,
 ) -> List[CameraView]:
-    """
-    Load camera poses from a transforms_*.json file.
+    """Load camera poses from a ``transforms_*.json`` file.
 
     Args:
-        json_path: Path to transforms JSON.
-        png_suffix: If True, append '.png' to file_path (NeRF Synthetic convention).
-                    Set False for datasets where paths already include the extension.
+        json_path:  Path to the transforms JSON.
+        png_suffix: If ``True``, append ``.png`` to each ``file_path``
+                    (NeRF-synthetic convention).  Set ``False`` for datasets
+                    where paths already include the extension.
     """
     base_dir = json_path.parent
     with open(json_path, "r") as f:
@@ -183,78 +191,8 @@ def load_cameras(
             MVP=MVP, camera_angle_x=camera_angle_x, width=width, height=height,
         ))
 
-    print(f"[cameras] {len(views)} views, {width}x{height}")
+    print(f"[cameras] {len(views)} views, {width}×{height}")
     return views
-
-
-# ── Shared training helpers ──────────────────────────────────────────
-
-def project_vertices(verts, mvp):
-    V_h = torch.cat([verts, torch.ones_like(verts[:, :1])], dim=-1)
-    return torch.einsum("bij,nj->bni", mvp, V_h).contiguous()
-
-
-def exp_decay_mult(step: int, total_steps: int, final_mult: float = 0.01) -> float:
-    step = max(1, min(step, total_steps))
-    return final_mult ** (step / float(total_steps))
-
-
-def count_visible_triangles(resolution, MVPs, V, F, level, alpha_src, batch_size=16):
-    H, W = resolution
-    num_views = MVPs.shape[0]
-    num_batches = (num_views + batch_size - 1) // batch_size
-    count = torch.zeros(F.shape[0], dtype=torch.long, device="cuda")
-    for i in range(num_batches):
-        start = i * batch_size
-        end = start + batch_size if i < num_batches - 1 else num_views
-        V_clip = project_vertices(V, MVPs[start:end])
-        rast = ds.rasterize_multires_triangle_alpha(
-            (H, W), V_clip, F, level, alpha_src, stochastic=False,
-        )
-        count += ds.count_triangle_ids(rast, F.shape[0])
-    return count
-
-
-def build_keep_map(counts: torch.Tensor, remove: int) -> torch.Tensor:
-    sorted_idx = torch.argsort(counts, stable=True)
-    keep_idx = sorted_idx[remove:]
-    keep_idx, _ = torch.sort(keep_idx)
-    return keep_idx
-
-
-def split_edges_from_training_views(
-    resolution, MVPs, V, F, alpha_max_level, alpha_acc, tau_ratio, num_views_cap,
-):
-    H, W = resolution
-    num_views = MVPs.shape[0]
-    num_original_faces = F.shape[0]
-    dev = V.device
-
-    perm = torch.randperm(num_views, device=dev, dtype=torch.long)
-    perm_MVPs = MVPs[perm[: min(num_views, num_views_cap)]]
-
-    V_clip = project_vertices(V, perm_MVPs)
-    rast = ds.rasterize_multires_triangle_alpha(
-        (H, W), V_clip, F, alpha_max_level, alpha_acc, stochastic=False,
-    )
-
-    fMap = torch.arange(F.shape[0], device=dev, dtype=torch.long)
-
-    for i in range(perm_MVPs.shape[0]):
-        rast_this = rast[i, ...]
-        face_idx = (rast_this[rast_this[..., -1] > 0][..., -1].int() - 1).unique().ravel()
-        assert torch.all(face_idx >= 0) and torch.all(face_idx < num_original_faces)
-
-        valid_faces = torch.zeros(num_original_faces, dtype=torch.int32, device=dev)
-        valid_faces[face_idx] = 1.0
-        valid_faces = valid_faces[fMap].contiguous()
-
-        V, F, fMap_next, _ = ds.split_triangle_soup_clip_until(
-            (H, W), perm_MVPs[i], V, F, valid_faces, tau_ratio=tau_ratio,
-        )
-        fMap = fMap[fMap_next].contiguous()
-
-    return V, F, fMap
 
 
 # ── Main ─────────────────────────────────────────────────────────────
@@ -267,7 +205,7 @@ def main():
     parser.add_argument("--mobilenerf_root", type=str, default="./datasets/mobilenerf_results",
                         help="Root of MobileNeRF results (contains <scene>/obj/shape_15K.obj)")
     parser.add_argument("--downscale", type=int, default=1, choices=[1, 2, 4],
-                        help="Downscale GT images by this factor (e.g., 2 for Shelly)")
+                        help="Downscale GT images by this factor (e.g. 2 for Shelly)")
     parser.add_argument("--no_png_suffix", action="store_true",
                         help="Don't append .png to file_path (use for Shelly)")
     parser.add_argument("--batch_size", type=int, default=4)
@@ -335,7 +273,7 @@ def main():
         H, W = H // args.downscale, W // args.downscale
 
     N_train = mvps.shape[0]
-    print(f"[train] {N_train} views, {H}x{W}")
+    print(f"[train] {N_train} views, {H}×{W}")
 
     # ── Convert mesh to triangle soup ────────────────────────────────
 
@@ -361,13 +299,13 @@ def main():
 
     verts.requires_grad = True
 
-    # ── Color MLP ────────────────────────────────────────────────────
+    # ── Colour MLP ───────────────────────────────────────────────────
 
     color_mlp = ds.ColorMLP(
         input_dim=feat_dim + 9, hidden_dim=16, n_layers=2, output_dim=3,
     ).to(device="cuda")
 
-    # ── Optimizers ───────────────────────────────────────────────────
+    # ── Optimisers ───────────────────────────────────────────────────
 
     optimizer_soup = Adam([
         {"params": [feat_src], "lr": 5e-2},
@@ -390,7 +328,7 @@ def main():
     perm = torch.randperm(N_train, device=device)
     ptr = 0
 
-    pbar = tqdm(range(1, steps + 1), desc="optimizing", leave=True)
+    pbar = tqdm(range(1, steps + 1), desc="optimising", leave=True)
     for i_iter in pbar:
         end = min(ptr + batch_size, N_train)
         batch_idx = perm[ptr:end]
@@ -429,7 +367,8 @@ def main():
         mask = (rast_out.detach()[..., -1:] > 0).float()
         color = mask * color + (1.0 - mask)
 
-        rf_loss = ds.radiance_field_loss(
+        # Opacity auxiliary loss (zero-valued; hooks gradient into alpha_src)
+        aux_loss = ds.opacity_aux_loss(
             color.detach(), batch_gt, rast_out, clip_verts, faces,
             level=Rmax, alpha_src=alpha_acc,
         )
@@ -438,7 +377,7 @@ def main():
         ssim_loss = 0.5 * (1 - ssim(
             batch_gt.permute(0, 3, 1, 2), color.permute(0, 3, 1, 2), data_range=1.0,
         ))
-        loss = rf_loss + 0.8 * l1_loss + 0.2 * ssim_loss
+        loss = aux_loss + 0.8 * l1_loss + 0.2 * ssim_loss
 
         optimizer_soup.zero_grad(set_to_none=True)
         optimizer_vert.zero_grad(set_to_none=True)
@@ -452,7 +391,7 @@ def main():
         losses.append(l)
         pbar.set_postfix(loss=f"{l:.6f}")
 
-        # ── Lift multires levels at step 5000 ────────────────────────
+        # ── Lift multi-resolution levels at step 5 000 ───────────────
         if i_iter == 5_000 and i_iter < steps:
             with torch.no_grad():
                 Rmin, Rmax = 2, 5

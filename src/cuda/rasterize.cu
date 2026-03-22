@@ -920,7 +920,7 @@ void backward_edge_grad(
     CUDA_CHECK(cudaGetLastError()); // catch kernel errors
 }
 
-__global__ void backward_radiance_field_loss_kernel(
+__global__ void backward_opacity_aux_loss_kernel(
     int B, int H, int W, int C,
     const float* __restrict__ color,         // [B, H, W, C]
     const float* __restrict__ target,        // [B, H, W, C]
@@ -970,7 +970,7 @@ __global__ void backward_radiance_field_loss_kernel(
     }
 }
 
-void backward_radiance_field_loss(
+void backward_opacity_aux_loss(
     int B, int H, int W, int C,
     const float* __restrict__ color,         // [B, H, W, C]
     const float* __restrict__ target,        // [B, H, W, C]
@@ -983,159 +983,9 @@ void backward_radiance_field_loss(
 ) {
     if (num_frags == 0) return;
 
-    backward_radiance_field_loss_kernel<<<CUDA_BLOCKS(num_frags), CUDA_THREADS>>>(
+    backward_opacity_aux_loss_kernel<<<CUDA_BLOCKS(num_frags), CUDA_THREADS>>>(
         B, H, W, C, color, target, rast, num_frags, frag_pix, frag_attrs,
         frag_alpha, grad_frag_alpha
-    );
-
-    CUDA_CHECK(cudaGetLastError()); // catch kernel errors
-}
-
-__global__ void frag_alpha_mobilenerf_kernel(
-    int num_frags,
-    const float* frag_attrs, // [num_frags, 4]
-    const float* uvs,        // [V, 2]
-    const int* tri,          // [T, 3]
-    int texH,
-    int texW,
-    const float* feat0,      // [texH, texW, 4]
-    float* frag_alpha        // [num_frags,]
-) {
-    const unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= num_frags) return;
-
-    const int tri_id = static_cast<int>(frag_attrs[idx * 4 + 3]) - 1;
-    if (tri_id < 0) return;
-
-    const float b0 = frag_attrs[idx * 4 + 0];
-    const float b1 = frag_attrs[idx * 4 + 1];
-    const float b2 = 1.f - b0 - b1;
-
-    const int i0 = tri[tri_id * 3 + 0];
-    const int i1 = tri[tri_id * 3 + 1];
-    const int i2 = tri[tri_id * 3 + 2];
-
-    // ----- barycentric UV interpolation -----
-    const float u = b0 * uvs[i0 * 2 + 0]
-                  + b1 * uvs[i1 * 2 + 0]
-                  + b2 * uvs[i2 * 2 + 0];
-
-    const float v = b0 * uvs[i0 * 2 + 1]
-                  + b1 * uvs[i1 * 2 + 1]
-                  + b2 * uvs[i2 * 2 + 1];
-
-    // ----- nearest neighbor texel indices -----
-    // assuming u,v in [0,1], left→right, top→bottom (or whatever your UVs are)
-    float fx = u * (texW - 1);
-    float fy = v * (texH - 1);
-
-    int ix = static_cast<int>(floorf(fx + 0.5f));  // round to nearest
-    int iy = static_cast<int>(floorf(fy + 0.5f));
-
-    // clamp to valid range
-    ix = max(0, min(texW - 1, ix));
-    iy = max(0, min(texH - 1, iy));
-
-    // ----- flat index into feat0[y, x, c] -----
-    const int tex_idx = (iy * texW + ix) * 4;  // 4 = RGBA
-
-    // assuming alpha is channel 3
-    const float alpha = feat0[tex_idx + 0];
-    frag_alpha[idx] = alpha;
-}
-
-void frag_alpha_mobilenerf(
-    int num_frags,
-    const float* frag_attrs, // [num_frags, 4]
-    const float* uvs,        // [V, 2]
-    const int* tri,          // [T, 3]
-    int texH,
-    int texW,
-    const float* feat0,      // [texH, texW, 4]
-    float* frag_alpha        // [num_frags,]
-) {
-    if (num_frags == 0) return;
-
-    frag_alpha_mobilenerf_kernel<<<CUDA_BLOCKS(num_frags), CUDA_THREADS>>>(
-        num_frags, frag_attrs, uvs, tri, texH, texW,
-        feat0, frag_alpha
-    );
-
-    CUDA_CHECK(cudaGetLastError()); // catch kernel errors
-}
-
-__global__ void lookup_feats_mobilenerf_kernel(
-    int B, int H, int W,
-    float* rast,         // [B, H, W, 4]
-    const float* uvs,    // [V, 2]
-    const int* tri,      // [T, 3]
-    int texH,
-    int texW,
-    const float* feat0,  // [texH, texW, 4]
-    const float* feat1,  // [texH, texW, 4]
-    float* image         // [H, W, 8]
-) {
-    const unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= B * H * W) return;
-
-    const int tri_id = static_cast<int>(rast[idx * 4 + 3]) - 1;
-    if (tri_id < 0) return;
-
-    const float b0 = rast[idx * 4 + 0];
-    const float b1 = rast[idx * 4 + 1];
-    const float b2 = 1.f - b0 - b1;
-
-    const int i0 = tri[tri_id * 3 + 0];
-    const int i1 = tri[tri_id * 3 + 1];
-    const int i2 = tri[tri_id * 3 + 2];
-
-    // ----- barycentric UV interpolation -----
-    const float u = b0 * uvs[i0 * 2 + 0]
-                  + b1 * uvs[i1 * 2 + 0]
-                  + b2 * uvs[i2 * 2 + 0];
-
-    const float v = b0 * uvs[i0 * 2 + 1]
-                  + b1 * uvs[i1 * 2 + 1]
-                  + b2 * uvs[i2 * 2 + 1];
-
-    // ----- nearest neighbor texel indices -----
-    // assuming u,v in [0,1], left→right, top→bottom (or whatever your UVs are)
-    float fx = u * (texW - 1);
-    float fy = v * (texH - 1);
-
-    int ix = static_cast<int>(floorf(fx + 0.5f));  // round to nearest
-    int iy = static_cast<int>(floorf(fy + 0.5f));
-
-    // clamp to valid range
-    ix = max(0, min(texW - 1, ix));
-    iy = max(0, min(texH - 1, iy));
-
-    // ----- flat index into feat0[y, x, c] -----
-    const int tex_idx = (iy * texW + ix) * 4;  // 4 = RGBA
-
-    #pragma unroll
-    for (int i = 0; i < 4; ++i) {
-        image[idx * 8 + 0 + i] = feat0[tex_idx + i];
-        image[idx * 8 + 4 + i] = feat1[tex_idx + i];
-    }
-}
-
-void lookup_feats_mobilenerf(
-    int B, int H, int W,
-    float* rast,         // [B, H, W, 4]
-    const float* uvs,    // [V, 2]
-    const int* tri,      // [T, 3]
-    int texH,
-    int texW,
-    const float* feat0,  // [texH, texW, 4]
-    const float* feat1,  // [texH, texW, 4]
-    float* image         // [H, W, 8]
-) {
-    const int total = B * H * W;
-
-    lookup_feats_mobilenerf_kernel<<<CUDA_BLOCKS(total), CUDA_THREADS>>>(
-        B, H, W, rast, uvs, tri, texH, texW,
-        feat0, feat1, image
     );
 
     CUDA_CHECK(cudaGetLastError()); // catch kernel errors

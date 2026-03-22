@@ -62,17 +62,8 @@ __constant__ float SH_C2[] = {
     -1.0925484305920792f, // -sqrt(15) / (2 * sqrt(pi))
     0.5462742152960396f   // sqrt(15) / (4 * sqrt(pi))
 };
-// __constant__ float SH_C3[] = {
-//     -0.5900435899266435f,  // -sqrt(35) / (2 * sqrt(2*pi))
-//     2.890611442640554f,    // sqrt(105) / (2 * sqrt(pi))
-//     -0.4570457994644658f,  // -sqrt(21) / (2 * sqrt(2*pi))
-//     0.3731763325901154f,   // sqrt(7) / (4 * sqrt(pi))
-//     -0.4570457994644658f,  // -sqrt(21) / (2 * sqrt(2*pi))
-//     1.445305721320277f,    // sqrt(105) / (4 * sqrt(pi))
-//     -0.5900435899266435f   // -sqrt(35) / (2 * sqrt(2*pi))
-// };
 
-// Forward: Evaluate spherical harmonics up to degree 2 only
+// Evaluate spherical harmonics up to degree 2
 __device__ inline void eval_sh2(const float x, const float y, const float z, float* sh) {
     // Degree 0
     sh[0] = SH_C0;
@@ -153,7 +144,7 @@ __device__ void perturb_direction_vmf(
     direction[1] = w * mu_y + sqrt_1_minus_w2 * (cos_theta * v1_y + sin_theta * v2_y);
     direction[2] = w * mu_z + sqrt_1_minus_w2 * (cos_theta * v1_z + sin_theta * v2_z);
 }
-} // namesapce
+} // namespace
 
 __global__ void encode_view_dir_freq_kernel(
     int B, int H, int W,

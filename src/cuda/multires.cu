@@ -118,7 +118,6 @@ __device__ void backward_multires_triangle_interp_d(
         for (uint32_t i = 0; i < 3; ++i) {
             #pragma unroll 4
             for (uint32_t j = 0; j < feature_dim; ++j) {
-                // out[j] += weight[i] * level_features[index[i] * feature_dim + j];
                 atomicAdd(&level_grad_features[index[i] * feature_dim + j], grad_out[j] * weight[i]);
             }
         }
