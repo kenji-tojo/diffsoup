@@ -5,7 +5,11 @@
 #   python examples/01_mip360.py --scene_root ./datasets/360_v2/kitchen
 #
 # Dependencies (beyond diffsoup):
-#   pip install open3d imageio torchvision tqdm pytorch-msssim lpips matplotlib scipy
+#   pip install open3d imageio torchvision tqdm pytorch-msssim matplotlib scipy
+#
+# Note: LPIPS is intentionally excluded from this example. For fair comparison
+# with other methods, ensure you use a consistent LPIPS model and weights
+# (e.g., VGG vs AlexNet, v0.0 vs v0.1) across all baselines.
 
 from __future__ import annotations
 
@@ -19,7 +23,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import open3d as o3d
 import torch
-from lpips import LPIPS
 from pytorch_msssim import ssim
 from torch.optim import Adam
 from tqdm.auto import tqdm
@@ -124,8 +127,6 @@ def main(
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     os.makedirs(out_dir, exist_ok=True)
-
-    lpips_fn = LPIPS(net="vgg").to(device)
 
     # ── Load data ────────────────────────────────────────────────────
 
@@ -442,7 +443,7 @@ def main(
     out_dir_test = os.path.join(out_dir, "test_views")
     os.makedirs(out_dir_test, exist_ok=True)
 
-    psnrs, ssims, lpips_vals = [], [], []
+    psnrs, ssims = [], []
 
     with torch.no_grad():
         for i, fr in enumerate(test_frames):
@@ -472,7 +473,6 @@ def main(
             pred_nchw = pred_lin.permute(2, 0, 1).unsqueeze(0)
             gt_nchw = gt_lin.permute(2, 0, 1).unsqueeze(0)
             ssims.append(float(ssim(gt_nchw, pred_nchw, data_range=1.0).item()))
-            lpips_vals.append(float(lpips_fn(pred_nchw * 2 - 1, gt_nchw * 2 - 1).item()))
 
             stem = os.path.splitext(os.path.basename(fr["img_path"]))[0]
             iio.imwrite(
@@ -489,12 +489,11 @@ def main(
     if psnrs:
         print(f"[metrics] PSNR  {np.mean(psnrs):.3f} dB")
         print(f"[metrics] SSIM  {np.mean(ssims):.4f}")
-        print(f"[metrics] LPIPS {np.mean(lpips_vals):.4f}")
 
         with open(os.path.join(out_dir_test, "metrics.txt"), "w") as f:
-            for i, (p, s, l) in enumerate(zip(psnrs, ssims, lpips_vals)):
-                f.write(f"{i:04d} PSNR={p:.3f} SSIM={s:.4f} LPIPS={l:.4f}\n")
-            f.write(f"\nmean PSNR={np.mean(psnrs):.3f} SSIM={np.mean(ssims):.4f} LPIPS={np.mean(lpips_vals):.4f}\n")
+            for i, (p, s) in enumerate(zip(psnrs, ssims)):
+                f.write(f"{i:04d} PSNR={p:.3f} SSIM={s:.4f}\n")
+            f.write(f"\nmean PSNR={np.mean(psnrs):.3f} SSIM={np.mean(ssims):.4f}\n")
 
 
 if __name__ == "__main__":
