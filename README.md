@@ -7,6 +7,8 @@
 
 [Project Page](TBD) | [Paper](TBD) | [Video](TBD)
 
+> 🚧 **The complete codebase including the interactive viewer will be released by March 27, 2026 (AOE). Stay tuned!**
+
 ## Tested Environment
 
 - Ubuntu 22.04 LTS
@@ -61,3 +63,7 @@ python3 examples/01_mip360.py
   year      = {2026}
 }
 ```
+
+## Contact
+
+If you encounter any issues (e.g. missing files), please feel free to contact the first author [Kenji Tojo](https://kenji-tojo.github.io/). Questions are also welcome!
