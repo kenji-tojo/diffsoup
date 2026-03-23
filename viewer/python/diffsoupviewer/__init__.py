@@ -1,19 +1,38 @@
 # python/diffsoupviewer/__init__.py
+"""Interactive viewer for DiffSoup meshes with per-triangle LUT + MLP shading."""
+
 from __future__ import annotations
 
-import numpy as np
 import os
+
+import numpy as np
 
 from ._core import __version__
 from . import _core
 
-def launch_viewer_with_mlp(
+
+def launch_viewer(
     verts: np.ndarray,
     faces: np.ndarray,
     face_color_lut: np.ndarray,
-    W1, b1, W2,b2, W3, b3, enc_freq,
-    output_dir: str = "./output",
-):
+    W1: np.ndarray,
+    b1: np.ndarray,
+    W2: np.ndarray,
+    b2: np.ndarray,
+    W3: np.ndarray,
+    b3: np.ndarray,
+    output_dir: str = "./results/viewer",
+) -> None:
+    """Open an interactive viewer window (blocks until closed).
+
+    Args:
+        verts: float32 [V, 3] — vertex positions.
+        faces: int32   [F, 3] — triangle indices.
+        face_color_lut: float32 [H, W, 8] — per-triangle colour LUT
+            (channels 0–3 → buffer A, channels 4–7 → buffer B).
+        W1, b1, W2, b2, W3, b3: MLP weight matrices (float32).
+        output_dir: directory for screenshots.
+    """
     V, _ = verts.shape
     F, _ = faces.shape
     assert verts.shape == (V, 3) and verts.dtype == np.float32
@@ -22,90 +41,81 @@ def launch_viewer_with_mlp(
     H, W, _ = face_color_lut.shape
     assert face_color_lut.shape == (H, W, 8) and face_color_lut.dtype == np.float32
 
-    face_color_lut0 = face_color_lut[..., 0:4]
-    face_color_lut1 = face_color_lut[..., 4:8]
-    face_color_lut0 = (face_color_lut0 * 255).clip(0, 255).astype(np.uint8)
-    face_color_lut1 = (face_color_lut1 * 255).clip(0, 255).astype(np.uint8)
+    lut0 = (face_color_lut[..., :4] * 255).clip(0, 255).astype(np.uint8)
+    lut1 = (face_color_lut[..., 4:] * 255).clip(0, 255).astype(np.uint8)
 
-    verts = np.ascontiguousarray(verts)
-    faces = np.ascontiguousarray(faces)
-    face_color_lut0 = np.ascontiguousarray(face_color_lut0)
-    face_color_lut1 = np.ascontiguousarray(face_color_lut1)
     output_dir = os.path.abspath(output_dir)
     os.makedirs(output_dir, exist_ok=True)
 
     _core.launch_viewer_with_mlp(
-        verts, faces,
-        face_color_lut0, face_color_lut1,
-        W1, b1, W2, b2, W3, b3, enc_freq,
-        output_dir
+        np.ascontiguousarray(verts),
+        np.ascontiguousarray(faces),
+        np.ascontiguousarray(lut0),
+        np.ascontiguousarray(lut1),
+        np.ascontiguousarray(W1),
+        np.ascontiguousarray(b1),
+        np.ascontiguousarray(W2),
+        np.ascontiguousarray(b2),
+        np.ascontiguousarray(W3),
+        np.ascontiguousarray(b3),
+        output_dir,
     )
-    return
 
-def benchmark_viewer_with_mlp(
-    verts,
-    faces,
-    lut0,
-    lut1,
-    W1, b1,
-    W2, b2,
-    W3, b3,
-    enc_freq,
-    mvps,
-    width=1200,
-    height=1200,
-    warmup=10,
-    save_every=0,
-    output_dir: str = "./output",
-):
-    """
-    OpenGL benchmark entry point (timing-only, CUDA-comparable).
+
+def benchmark(
+    verts: np.ndarray,
+    faces: np.ndarray,
+    lut0: np.ndarray,
+    lut1: np.ndarray,
+    W1: np.ndarray,
+    b1: np.ndarray,
+    W2: np.ndarray,
+    b2: np.ndarray,
+    W3: np.ndarray,
+    b3: np.ndarray,
+    mvps: np.ndarray,
+    width: int = 1200,
+    height: int = 1200,
+    warmup: int = 10,
+    save_every: int = 0,
+    output_dir: str = "./results/viewer",
+) -> None:
+    """Run a headless rendering benchmark.
 
     Args:
-        verts: float32 [V,3]
-        faces: int32   [F,3]
-        lut0:  uint8   [H,W,4]
-        lut1:  uint8   [H,W,4]
-        W1,b1,W2,b2,W3,b3: MLP weights (float32)
-        enc_freq: float
-        mvps: float32 [B,4,4] (column-major)
-        width,height: render resolution
-        warmup: number of warmup frames (not timed)
-        save_every: save every N frames for verification (0 = disable)
+        verts: float32 [V, 3].
+        faces: int32   [F, 3].
+        lut0:  uint8   [H, W, 4] — colour buffer A.
+        lut1:  uint8   [H, W, 4] — colour buffer B.
+        W1, b1, W2, b2, W3, b3: MLP weights (float32).
+        mvps: float32 [B, 4, 4] column-major MVP matrices.
+        width, height: render resolution.
+        warmup: frames to skip before timing.
+        save_every: save a screenshot every N frames (0 = disable).
+        output_dir: directory for logs and screenshots.
     """
-    import numpy as np
-
-    # ---- basic sanity ----
     assert verts.ndim == 2 and verts.shape[1] == 3
     assert faces.ndim == 2 and faces.shape[1] == 3
     assert mvps.ndim == 3 and mvps.shape[1:] == (4, 4)
 
-    verts = np.ascontiguousarray(verts, dtype=np.float32)
-    faces = np.ascontiguousarray(faces, dtype=np.int32)
-    lut0  = np.ascontiguousarray(lut0,  dtype=np.uint8)
-    lut1  = np.ascontiguousarray(lut1,  dtype=np.uint8)
+    def c(arr: np.ndarray, dtype: np.dtype) -> np.ndarray:
+        return np.ascontiguousarray(arr, dtype=dtype)
 
-    W1 = np.ascontiguousarray(W1, dtype=np.float32)
-    b1 = np.ascontiguousarray(b1, dtype=np.float32)
-    W2 = np.ascontiguousarray(W2, dtype=np.float32)
-    b2 = np.ascontiguousarray(b2, dtype=np.float32)
-    W3 = np.ascontiguousarray(W3, dtype=np.float32)
-    b3 = np.ascontiguousarray(b3, dtype=np.float32)
-
-    mvps = np.ascontiguousarray(mvps, dtype=np.float32)
-
-    # ---- dispatch to C++ ----
     _core.benchmark_viewer_with_mlp(
-        verts, faces,
-        lut0, lut1,
-        W1, b1,
-        W2, b2,
-        W3, b3,
-        float(enc_freq),
-        mvps,
+        c(verts, np.float32),
+        c(faces, np.int32),
+        c(lut0, np.uint8),
+        c(lut1, np.uint8),
+        c(W1, np.float32),
+        c(b1, np.float32),
+        c(W2, np.float32),
+        c(b2, np.float32),
+        c(W3, np.float32),
+        c(b3, np.float32),
+        c(mvps, np.float32),
         int(width),
         int(height),
         int(warmup),
         int(save_every),
-        output_dir
+        output_dir,
     )

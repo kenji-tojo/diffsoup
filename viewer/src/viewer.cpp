@@ -1,22 +1,28 @@
+// viewer.cpp — OpenGL mesh viewer implementation.
+
 #include "viewer.h"
 
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <fstream>
 #include <iostream>
 #include <vector>
-#include <algorithm>
-#include <string>
-#include <fstream>
-#include <cstring>
-#include <cstdio>
-#include <cmath>
 
-#include "glm/gtc/type_ptr.hpp"
+#include <glm/gtc/type_ptr.hpp>
+
 #include "imgui.h"
-#include "imgui_impl_opengl3.h"
 #include "imgui_impl_glfw.h"
+#include "imgui_impl_opengl3.h"
 
-// Minimal screenshot writer – no external dependency.
-// Writes a binary PPM (P6) file from RGBA pixels, dropping the alpha channel.
-static bool write_ppm(const char* path, int w, int h, const unsigned char* rgba) {
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Write a binary PPM (P6) screenshot from RGBA pixels.
+static bool write_ppm(const char* path, int w, int h,
+                      const unsigned char* rgba) {
     std::ofstream f(path, std::ios::binary);
     if (!f) return false;
     f << "P6\n" << w << ' ' << h << "\n255\n";
@@ -25,32 +31,26 @@ static bool write_ppm(const char* path, int w, int h, const unsigned char* rgba)
     return f.good();
 }
 
-#include "camera.h"
-#include "triangles.h"
-#include "options.h"
-
-// ---- logging helpers ----
-static inline void __gl_check_error(const char* what) {
+static void check_gl(const char* call) {
     GLenum e;
-    while ((e = glGetError()) != GL_NO_ERROR) {
-        std::cerr << "[GL ERROR] 0x" << std::hex << e << std::dec << " after " << what << std::endl;
-    }
+    while ((e = glGetError()) != GL_NO_ERROR)
+        std::cerr << "[GL] 0x" << std::hex << e << std::dec
+                  << " after " << call << '\n';
 }
-#define GL_CALL(x) do { x; __gl_check_error(#x); } while(0)
+#define GL(x) do { x; check_gl(#x); } while (0)
 
-// ---------- tiny GL helpers ----------
 static GLuint compile_shader(GLenum type, const char* src) {
     GLuint s = glCreateShader(type);
-    GL_CALL(glShaderSource(s, 1, &src, nullptr));
-    GL_CALL(glCompileShader(s));
+    GL(glShaderSource(s, 1, &src, nullptr));
+    GL(glCompileShader(s));
     GLint ok = GL_FALSE;
-    GL_CALL(glGetShaderiv(s, GL_COMPILE_STATUS, &ok));
+    GL(glGetShaderiv(s, GL_COMPILE_STATUS, &ok));
     if (!ok) {
         GLint len = 0;
-        GL_CALL(glGetShaderiv(s, GL_INFO_LOG_LENGTH, &len));
-        std::vector<GLchar> log(std::max(1, len));
-        GL_CALL(glGetShaderInfoLog(s, len, nullptr, log.data()));
-        std::cerr << "Shader compile error:\n" << log.data() << std::endl;
+        glGetShaderiv(s, GL_INFO_LOG_LENGTH, &len);
+        std::string log(std::max(1, len), '\0');
+        glGetShaderInfoLog(s, len, nullptr, log.data());
+        std::cerr << "Shader compile error:\n" << log << std::endl;
         std::exit(EXIT_FAILURE);
     }
     return s;
@@ -58,62 +58,34 @@ static GLuint compile_shader(GLenum type, const char* src) {
 
 static GLuint link_program(GLuint vs, GLuint fs) {
     GLuint p = glCreateProgram();
-    GL_CALL(glAttachShader(p, vs));
-    GL_CALL(glAttachShader(p, fs));
-    GL_CALL(glLinkProgram(p));
+    GL(glAttachShader(p, vs));
+    GL(glAttachShader(p, fs));
+    GL(glLinkProgram(p));
     GLint ok = GL_FALSE;
-    GL_CALL(glGetProgramiv(p, GL_LINK_STATUS, &ok));
+    GL(glGetProgramiv(p, GL_LINK_STATUS, &ok));
     if (!ok) {
         GLint len = 0;
-        GL_CALL(glGetProgramiv(p, GL_INFO_LOG_LENGTH, &len));
-        std::vector<GLchar> log(std::max(1, len));
-        GL_CALL(glGetProgramInfoLog(p, len, nullptr, log.data()));
-        std::cerr << "Program link error:\n" << log.data() << std::endl;
+        glGetProgramiv(p, GL_INFO_LOG_LENGTH, &len);
+        std::string log(std::max(1, len), '\0');
+        glGetProgramInfoLog(p, len, nullptr, log.data());
+        std::cerr << "Program link error:\n" << log << std::endl;
         std::exit(EXIT_FAILURE);
     }
     return p;
 }
 
-// ---------- GLFW init ----------
-namespace {
-static double __viewer_stamp_prev = 0.0;
-static int    __viewer_frame_count = 0;
+// ---------------------------------------------------------------------------
+// GLFW bootstrap
+// ---------------------------------------------------------------------------
+
+static void glfw_error_cb(int /*error*/, const char* desc) {
+    std::cerr << desc << '\n';
 }
 
-void glfw_update_title(GLFWwindow* window) {
-    const double stamp_curr = glfwGetTime();
-    const double elapsed = stamp_curr - __viewer_stamp_prev;
-    if (elapsed > 0.5) {
-        __viewer_stamp_prev = stamp_curr;
-        const double fps = (double)__viewer_frame_count / elapsed;
-
-        // --- get window size ---
-        int w, h;
-        glfwGetWindowSize(window, &w, &h);
-
-        char tmp[128];
-        std::snprintf(
-            tmp, sizeof(tmp),
-            "Viewer - %dx%d - FPS: %.2f",
-            w, h, fps
-        );
-
-        glfwSetWindowTitle(window, tmp);
-        __viewer_frame_count = 0;
-    }
-    __viewer_frame_count++;
-}
-
-void glfw_error_callback(int error, const char* description) {
-    (void)error;
-    std::cerr << description << std::endl;
-}
-
-static GLFWwindow* glfw_init(const int width, const int height) {
-    glfwSetErrorCallback(::glfw_error_callback);
-
+static GLFWwindow* create_window(int w, int h, const char* title) {
+    glfwSetErrorCallback(glfw_error_cb);
     if (!glfwInit()) {
-        std::cerr << "glfwInit failed" << std::endl;
+        std::cerr << "glfwInit failed\n";
         std::exit(EXIT_FAILURE);
     }
 
@@ -123,88 +95,64 @@ static GLFWwindow* glfw_init(const int width, const int height) {
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 
-    GLFWwindow* window = glfwCreateWindow(width, height, "Viewer", nullptr, nullptr);
-    if (window == nullptr) {
+    GLFWwindow* win = glfwCreateWindow(w, h, title, nullptr, nullptr);
+    if (!win) {
         glfwTerminate();
-        std::cerr << "glfwCreateWindow failed" << std::endl;
+        std::cerr << "glfwCreateWindow failed\n";
         std::exit(EXIT_FAILURE);
     }
+    glfwMakeContextCurrent(win);
 
-    glfwMakeContextCurrent(window);
-
-    if (!gladLoadGL((GLADloadfunc) glfwGetProcAddress)) {
-        std::cout << "Failed to initialize OpenGL context" << std::endl;
+    if (!gladLoadGL((GLADloadfunc)glfwGetProcAddress)) {
+        std::cerr << "Failed to initialise OpenGL loader\n";
         std::exit(EXIT_FAILURE);
     }
 
     glfwSwapInterval(0);
 
-    GL_CALL(glClearDepth(1.0));
-    GL_CALL(glDepthFunc(GL_LESS));
-    GL_CALL(glPolygonMode(GL_FRONT_AND_BACK, GL_FILL));
-    GL_CALL(glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE));
+    GL(glClearDepth(1.0));
+    GL(glDepthFunc(GL_LESS));
+    GL(glPolygonMode(GL_FRONT_AND_BACK, GL_FILL));
 
+    // ImGui
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
-
-    ImGui_ImplGlfw_InitForOpenGL(window, false);
-    const char* glsl_version = "#version 330";
-    ImGui_ImplOpenGL3_Init(glsl_version);
+    ImGui_ImplGlfw_InitForOpenGL(win, true);
+    ImGui_ImplOpenGL3_Init("#version 330");
     ImGui::StyleColorsDark();
     ImGui::GetIO().IniFilename = nullptr;
-    glfwSetCharCallback(window, ImGui_ImplGlfw_CharCallback);
 
-    return window;
+    return win;
 }
 
-// ---------- UBO binding points ----------
-static constexpr GLuint kBind_W1 = 0;
-static constexpr GLuint kBind_B1 = 1;
-static constexpr GLuint kBind_W2 = 2;
-static constexpr GLuint kBind_B2 = 3;
-static constexpr GLuint kBind_W3 = 4;
-static constexpr GLuint kBind_B3 = 5;
-
-// ========== viewer implementation ==========
-namespace viewer {
-
-using std::uint32_t;
-
-Viewer::Viewer()
-    : m_camera(std::make_unique<Camera>()) {}
-
-Viewer::~Viewer() {
-    if (m_window != nullptr) {
-        if (m_postProg) glDeleteProgram(m_postProg);
-        if (m_postVAO)  glDeleteVertexArrays(1, &m_postVAO);
-
-        if (m_prog)     glDeleteProgram(m_prog);
-        if (m_vbo_pos)  glDeleteBuffers(1, &m_vbo_pos);
-        if (m_vbo_tid)  glDeleteBuffers(1, &m_vbo_tid);
-        if (m_vao)      glDeleteVertexArrays(1, &m_vao);
-
-        if (m_triTex[0]) glDeleteTextures(1, &m_triTex[0]);
-        if (m_triTex[1]) glDeleteTextures(1, &m_triTex[1]);
-
-        if (m_tex_color[0]) glDeleteTextures(1, &m_tex_color[0]);
-        if (m_tex_color[1]) glDeleteTextures(1, &m_tex_color[1]);
-        if (m_tex_depth)    glDeleteTextures(1, &m_tex_depth);
-        if (m_FBO)          glDeleteFramebuffers(1, &m_FBO);
-
-        if (m_uboW1) glDeleteBuffers(1, &m_uboW1);
-        if (m_uboB1) glDeleteBuffers(1, &m_uboB1);
-        if (m_uboW2) glDeleteBuffers(1, &m_uboW2);
-        if (m_uboB2) glDeleteBuffers(1, &m_uboB2);
-        if (m_uboW3) glDeleteBuffers(1, &m_uboW3);
-        if (m_uboB3) glDeleteBuffers(1, &m_uboB3);
-
-        ImGui_ImplOpenGL3_Shutdown();
-        ImGui_ImplGlfw_Shutdown();
-        ImGui::DestroyContext();
-        glfwDestroyWindow(m_window);
-        glfwTerminate();
+// FPS title display
+static void update_title(GLFWwindow* win) {
+    static double prev = 0.0;
+    static int    frames = 0;
+    ++frames;
+    double now = glfwGetTime();
+    if (now - prev > 0.5) {
+        int w, h;
+        glfwGetWindowSize(win, &w, &h);
+        char buf[128];
+        std::snprintf(buf, sizeof(buf), "Viewer  %dx%d  FPS: %.1f",
+                      w, h, frames / (now - prev));
+        glfwSetWindowTitle(win, buf);
+        prev = now;
+        frames = 0;
     }
 }
+
+// ---------------------------------------------------------------------------
+// UBO binding points
+// ---------------------------------------------------------------------------
+static constexpr GLuint kBind_W1 = 0, kBind_B1 = 1;
+static constexpr GLuint kBind_W2 = 2, kBind_B2 = 3;
+static constexpr GLuint kBind_W3 = 4, kBind_B3 = 5;
+
+// ---------------------------------------------------------------------------
+// Shader sources
+// ---------------------------------------------------------------------------
 
 static const char* kVS_Geom = R"(
 #version 330 core
@@ -219,9 +167,9 @@ uniform mat4 uMVP;
 void main() {
     vTriID = aTriID;
     int corner = gl_VertexID % 3;
-    vBary = (corner == 0) ? vec3(1.0, 0.0, 0.0) :
-            (corner == 1) ? vec3(0.0, 1.0, 0.0) :
-                            vec3(0.0, 0.0, 1.0);
+    vBary = (corner == 0) ? vec3(1,0,0) :
+            (corner == 1) ? vec3(0,1,0) :
+                            vec3(0,0,1);
     gl_Position = uMVP * vec4(aPos, 1.0);
 }
 )";
@@ -231,13 +179,13 @@ static const char* kFS_Geom = R"(
 flat in uint vTriID;
 in vec3 vBary;
 
-layout(location=0) out vec4 FragA; // COLOR0
-layout(location=1) out vec4 FragB; // COLOR1
+layout(location=0) out vec4 FragA;
+layout(location=1) out vec4 FragB;
 
-uniform ivec2     uTriTexSize;   // shared W,H for both LUTs
-uniform sampler2D uTriTex0;      // LUT #0
-uniform sampler2D uTriTex1;      // LUT #1
-uniform int       uLevel;        // single level to sample (e.g., 5)
+uniform ivec2     uTriTexSize;
+uniform sampler2D uTriTex0;
+uniform sampler2D uTriTex1;
+uniform int       uLevel;
 
 ivec2 idx_to_coord(int idx, int texW) {
     return ivec2(idx % texW, idx / texW);
@@ -252,30 +200,19 @@ int level_size(int L) {
 void main() {
     int texW = uTriTexSize.x;
     int texH = uTriTexSize.y;
-    int cap  = texW * texH;
-    if (cap <= 0) {
-        FragA = vec4(1,0,1,1);
-        FragB = FragA;
-        return;
-    }
+    if (texW * texH <= 0) { FragA = FragB = vec4(1,0,1,1); return; }
 
-    int S     = level_size(uLevel);
-    int base  = int(vTriID) * S;
+    int S    = level_size(uLevel);
+    int base = int(vTriID) * S;
 
-    float b0 = vBary.x;
-    float b1 = vBary.y;
-
+    float b0 = vBary.x, b1 = vBary.y;
     int   res   = 1 << uLevel;
     float res_f = float(res);
 
     float b0l = b0 * res_f;
     float b1l = b1 * res_f;
-
-    int x = int(floor(b0l));
-    int y = int(floor(b1l));
-    x = clamp(x, 0, res - 1);
-    y = clamp(y, 0, (res - 1) - x);
-
+    int x = clamp(int(floor(b0l)), 0, res - 1);
+    int y = clamp(int(floor(b1l)), 0, (res - 1) - x);
     b0l -= float(x);
     b1l -= float(y);
 
@@ -283,61 +220,43 @@ void main() {
     int   flip_u = flip ? 1 : 0;
     float flip_f = flip ? 1.0 : 0.0;
 
-    int x0 = x + 1;
-    int y0 = y;
-    int x1 = x;
-    int y1 = y + 1;
-    int x2 = x + flip_u;
-    int y2 = min(y + flip_u, res - x2);
+    int x0 = x + 1,       y0 = y;
+    int x1 = x,           y1 = y + 1;
+    int x2 = x + flip_u,  y2 = min(y + flip_u, res - x2);
 
-    int idx0 = (x0 + y0) * (x0 + y0 + 1) / 2 + y0;
-    int idx1 = (x1 + y1) * (x1 + y1 + 1) / 2 + y1;
-    int idx2 = (x2 + y2) * (x2 + y2 + 1) / 2 + y2;
+    int idx0 = (x0+y0)*(x0+y0+1)/2 + y0;
+    int idx1 = (x1+y1)*(x1+y1+1)/2 + y1;
+    int idx2 = (x2+y2)*(x2+y2+1)/2 + y2;
 
     float w0 = mix(b0l, 1.0 - b1l, flip_f);
     float w1 = mix(b1l, 1.0 - b0l, flip_f);
     float w2 = 1.0 - w0 - w1;
 
-    int i0 = base + idx0;
-    int i1 = base + idx1;
-    int i2 = base + idx2;
+    ivec2 c0 = idx_to_coord(base + idx0, texW);
+    ivec2 c1 = idx_to_coord(base + idx1, texW);
+    ivec2 c2 = idx_to_coord(base + idx2, texW);
 
-    ivec2 c0 = idx_to_coord(i0, texW);
-    ivec2 c1 = idx_to_coord(i1, texW);
-    ivec2 c2 = idx_to_coord(i2, texW);
+    vec4 a  = texelFetch(uTriTex0, c0, 0)*w0 + texelFetch(uTriTex0, c1, 0)*w1 + texelFetch(uTriTex0, c2, 0)*w2;
+    vec4 b  = texelFetch(uTriTex1, c0, 0)*w0 + texelFetch(uTriTex1, c1, 0)*w1 + texelFetch(uTriTex1, c2, 0)*w2;
 
-    vec4 a0 = texelFetch(uTriTex0, c0, 0);
-    vec4 a1 = texelFetch(uTriTex0, c1, 0);
-    vec4 a2 = texelFetch(uTriTex0, c2, 0);
+    if (b.a < 0.5) discard;
 
-    vec4 b0s = texelFetch(uTriTex1, c0, 0);
-    vec4 b1s = texelFetch(uTriTex1, c1, 0);
-    vec4 b2s = texelFetch(uTriTex1, c2, 0);
-
-    vec4 interpA = a0 * w0 + a1 * w1 + a2 * w2;
-    vec4 interpB = b0s * w0 + b1s * w1 + b2s * w2;
-
-    if (interpB.a < 0.5) discard; // exact same semantics
-
-    FragA = interpA;
-    FragB = vec4(vec3(interpB.rgb), 1.0); // write opaque on FG
+    FragA = a;
+    FragB = vec4(b.rgb, 1.0);
 }
 )";
 
 static const char* kVS_Post = R"(
 #version 410 core
-const vec2 verts[3] = vec2[3]( vec2(-1,-1), vec2(3,-1), vec2(-1,3) );
+const vec2 verts[3] = vec2[3](vec2(-1,-1), vec2(3,-1), vec2(-1,3));
 out vec2 vUV;
 void main() {
     gl_Position = vec4(verts[gl_VertexID], 0.0, 1.0);
-    vec2 uv = 0.5 * (gl_Position.xy + vec2(1.0));
+    vec2 uv = 0.5 * (gl_Position.xy + 1.0);
     vUV = vec2(uv.x, 1.0 - uv.y);
 }
 )";
 
-// UBO blocks (std140). We index 1D arrays W1[16], B1[4] etc.
-// W tiles are mat4 blocks for a 4x4 tiling of the 16x16 matrix.
-// Note: W3 is 3x16 -> represented as one block-row of 4 mat4s; only xyz rows used.
 static const char* kFS_Post = R"(
 #version 410 core
 in vec2 vUV;
@@ -345,66 +264,42 @@ out vec4 FragColor;
 
 uniform sampler2D texA;
 uniform sampler2D texB;
-
-// NEW: inverse MVP (column-major, same as GLSL mats)
 uniform mat4 uInvMVP;
-// NEW: encoding frequency
-uniform float uEncFreq;
 
 layout(std140) uniform W1Block { mat4 W1[16]; };
-layout(std140) uniform B1Block { vec4 B1[4];   };
+layout(std140) uniform B1Block { vec4 B1[4];  };
 layout(std140) uniform W2Block { mat4 W2[16]; };
-layout(std140) uniform B2Block { vec4 B2[4];   };
-layout(std140) uniform W3Block { mat4 W3[4];   };
-layout(std140) uniform B3Block { vec4 B3;      };
+layout(std140) uniform B2Block { vec4 B2[4];  };
+layout(std140) uniform W3Block { mat4 W3[4];  };
+layout(std140) uniform B3Block { vec4 B3;     };
 
-vec4 relu4(vec4 x){ return max(x, 0.0); }
-float sigmoid(float x){ return 1.0/(1.0+exp(-x)); }
+vec4  relu4(vec4 x) { return max(x, 0.0); }
+float sigmoid(float x) { return 1.0 / (1.0 + exp(-x)); }
 
-// --- helper: NDC->world multiply; GLSL mats are column-major ---
-vec3 ndcToWorld(vec4 ndc, mat4 invMVP){
-    vec4 clip = invMVP * ndc;
-    float inv_w = (abs(clip.w) > 1e-20) ? (1.0 / clip.w) : 0.0;
-    return clip.xyz * inv_w;
+vec3 ndc_to_world(vec4 ndc) {
+    vec4 clip = uInvMVP * ndc;
+    return clip.xyz / max(abs(clip.w), 1e-20);
 }
 
-// ---- SH2 constants ----
-const float SH_C0    = 0.28209479177387814;  // 1 / (2 * sqrt(pi))
-const float SH_C1    = 0.4886025119029199;   // sqrt(3) / (2 * sqrt(pi))
-const float SH_C2_0  = 1.0925484305920792;   // sqrt(15) / (2 * sqrt(pi))
-const float SH_C2_1  = -1.0925484305920792;  // -sqrt(15) / (2 * sqrt(pi))
-const float SH_C2_2  = 0.31539156525252005;  // sqrt(5) / (4 * sqrt(pi))
-const float SH_C2_3  = -1.0925484305920792;  // -sqrt(15) / (2 * sqrt(pi))
-const float SH_C2_4  = 0.5462742152960396;   // sqrt(15) / (4 * sqrt(pi))
+// Spherical-harmonics basis up to degree 2 (9 coefficients).
+const float SH_C0   =  0.28209479177387814;
+const float SH_C1   =  0.4886025119029199;
+const float SH_C2_0 =  1.0925484305920792;
+const float SH_C2_1 = -1.0925484305920792;
+const float SH_C2_2 =  0.31539156525252005;
+const float SH_C2_3 = -1.0925484305920792;
+const float SH_C2_4 =  0.5462742152960396;
 
-// Evaluate SH basis up to degree 2.
-// Order:
-//  0: Y_0^0
-//  1: Y_1^-1
-//  2: Y_1^0
-//  3: Y_1^1
-//  4..8: degree 2 terms
-void eval_sh2(in vec3 d, out float sh[9]) {
-    float x = d.x;
-    float y = d.y;
-    float z = d.z;
-
-    // Degree 0
+void eval_sh2(vec3 d, out float sh[9]) {
     sh[0] = SH_C0;
-
-    // Degree 1
-    sh[1] = -SH_C1 * y;
-    sh[2] =  SH_C1 * z;
-    sh[3] = -SH_C1 * x;
-
-    // Degree 2
-    float xx = x * x, yy = y * y, zz = z * z;
-    float xy = x * y, xz = x * z, yz = y * z;
-
-    sh[4] = SH_C2_0 * xy;
-    sh[5] = SH_C2_1 * yz;
-    sh[6] = SH_C2_2 * (2.0 * zz - xx - yy);
-    sh[7] = SH_C2_3 * xz;
+    sh[1] = -SH_C1 * d.y;
+    sh[2] =  SH_C1 * d.z;
+    sh[3] = -SH_C1 * d.x;
+    float xx = d.x*d.x, yy = d.y*d.y, zz = d.z*d.z;
+    sh[4] = SH_C2_0 * d.x * d.y;
+    sh[5] = SH_C2_1 * d.y * d.z;
+    sh[6] = SH_C2_2 * (2.0*zz - xx - yy);
+    sh[7] = SH_C2_3 * d.x * d.z;
     sh[8] = SH_C2_4 * (xx - yy);
 }
 
@@ -412,681 +307,443 @@ void main() {
     vec4 A = texture(texA, vUV);
     vec4 B = texture(texB, vUV);
 
-    // background: if not foreground, pass through A
-    if (B.a < 0.5) {
-        FragColor = vec4(A.rgb, 1.0);
-        return;
-    }
+    if (B.a < 0.5) { FragColor = vec4(A.rgb, 1.0); return; }
 
-    // ---- compute per-pixel view dir (pixel center) ----
-    // Our vUV is [0,1]^2 with a Y flip done in VS.
-    // Map to NDC:
-    float ndc_x = -1.0 + 2.0 * vUV.x;
-    float ndc_y = -1.0 + 2.0 * vUV.y;
+    // Per-pixel view direction via inverse MVP.
+    float ndc_x = vUV.x *  2.0 - 1.0;
+    float ndc_y = vUV.y *  2.0 - 1.0;
+    vec3 w_near = ndc_to_world(vec4(ndc_x, ndc_y, -1.0, 1.0));
+    vec3 w_far  = ndc_to_world(vec4(ndc_x, ndc_y,  1.0, 1.0));
+    vec3 v = normalize(w_near - w_far);
 
-    // Two points on the ray in NDC
-    vec3 world_near = ndcToWorld(vec4(ndc_x, ndc_y, -1.0, 1.0), uInvMVP);
-    vec3 world_far  = ndcToWorld(vec4(ndc_x, ndc_y,  1.0, 1.0), uInvMVP);
-
-    // View direction from far -> near (points toward camera)
-    vec3 v = normalize(world_near - world_far);
-
-    // ---- SH2 encoding of view dir ----
+    // SH2 view-direction encoding.
     float sh[9];
     eval_sh2(v, sh);
 
-    // ---- pack 16-D input ----
-    // idx 0..3 : A.rgba
-    // idx 4..6 : B.rgb
-    // idx 7..15: [vx, vy, vz, sin(w*vx), sin(w*vy), sin(w*vz), cos(w*vx), cos(w*vy), cos(w*vz)]
-    // Packed into four vec4s (x0..x3)
+    // 16-D MLP input: A.rgba (4) + B.rgb (3) + SH2 (9) = 16.
     vec4 x0 = vec4(A.r, A.g, A.b, A.a);
-    vec4 x1 = vec4(B.r, B.g, B.b, sh[0]);          // dims 4,5,6,7
-    vec4 x2 = vec4(sh[1], sh[2], sh[3], sh[4]);    // dims 8,9,10,11
-    vec4 x3 = vec4(sh[5], sh[6], sh[7], sh[8]);    // dims 12,13,14,15
+    vec4 x1 = vec4(B.r, B.g, B.b, sh[0]);
+    vec4 x2 = vec4(sh[1], sh[2], sh[3], sh[4]);
+    vec4 x3 = vec4(sh[5], sh[6], sh[7], sh[8]);
 
-    // ---- 16->16 ReLU ----
-    vec4 y0 = W1[ 0]*x0 + W1[ 1]*x1 + W1[ 2]*x2 + W1[ 3]*x3 + B1[0];
-    vec4 y1 = W1[ 4]*x0 + W1[ 5]*x1 + W1[ 6]*x2 + W1[ 7]*x3 + B1[1];
-    vec4 y2 = W1[ 8]*x0 + W1[ 9]*x1 + W1[10]*x2 + W1[11]*x3 + B1[2];
-    vec4 y3 = W1[12]*x0 + W1[13]*x1 + W1[14]*x2 + W1[15]*x3 + B1[3];
-    y0 = relu4(y0); y1 = relu4(y1); y2 = relu4(y2); y3 = relu4(y3);
+    // Layer 1: 16→16, ReLU
+    vec4 y0 = relu4(W1[ 0]*x0 + W1[ 1]*x1 + W1[ 2]*x2 + W1[ 3]*x3 + B1[0]);
+    vec4 y1 = relu4(W1[ 4]*x0 + W1[ 5]*x1 + W1[ 6]*x2 + W1[ 7]*x3 + B1[1]);
+    vec4 y2 = relu4(W1[ 8]*x0 + W1[ 9]*x1 + W1[10]*x2 + W1[11]*x3 + B1[2]);
+    vec4 y3 = relu4(W1[12]*x0 + W1[13]*x1 + W1[14]*x2 + W1[15]*x3 + B1[3]);
 
-    // ---- 16->16 ReLU ----
-    vec4 z0 = W2[ 0]*y0 + W2[ 1]*y1 + W2[ 2]*y2 + W2[ 3]*y3 + B2[0];
-    vec4 z1 = W2[ 4]*y0 + W2[ 5]*y1 + W2[ 6]*y2 + W2[ 7]*y3 + B2[1];
-    vec4 z2 = W2[ 8]*y0 + W2[ 9]*y1 + W2[10]*y2 + W2[11]*y3 + B2[2];
-    vec4 z3 = W2[12]*y0 + W2[13]*y1 + W2[14]*y2 + W2[15]*y3 + B2[3];
-    z0 = relu4(z0); z1 = relu4(z1); z2 = relu4(z2); z3 = relu4(z3);
+    // Layer 2: 16→16, ReLU
+    vec4 z0 = relu4(W2[ 0]*y0 + W2[ 1]*y1 + W2[ 2]*y2 + W2[ 3]*y3 + B2[0]);
+    vec4 z1 = relu4(W2[ 4]*y0 + W2[ 5]*y1 + W2[ 6]*y2 + W2[ 7]*y3 + B2[1]);
+    vec4 z2 = relu4(W2[ 8]*y0 + W2[ 9]*y1 + W2[10]*y2 + W2[11]*y3 + B2[2]);
+    vec4 z3 = relu4(W2[12]*y0 + W2[13]*y1 + W2[14]*y2 + W2[15]*y3 + B2[3]);
 
-    // ---- 16->3 sigmoid ----
-    vec4 acc = W3[0]*z0 + W3[1]*z1 + W3[2]*z2 + W3[3]*z3 + B3; // xyz used
+    // Layer 3: 16→3, sigmoid
+    vec4 acc = W3[0]*z0 + W3[1]*z1 + W3[2]*z2 + W3[3]*z3 + B3;
     vec3 mlp = vec3(sigmoid(acc.x), sigmoid(acc.y), sigmoid(acc.z));
 
-    // ---- residual blend: (1-residual)*albedo + residual*mlp ----
-    float residual = A.a;
-    vec3 albedo = A.rgb;
-    vec3 out3 = mix(albedo, mlp, residual);
-
-    FragColor = vec4(out3, 1.0);
+    // Residual blend: (1−α)·albedo + α·mlp, where α = A.a.
+    FragColor = vec4(mix(A.rgb, mlp, A.a), 1.0);
 }
 )";
 
-void Viewer::ensure_ubo_alloc() {
-    auto ensure = [](GLuint &ubo, GLsizeiptr size, GLuint binding){
-        if (!ubo) {
-            glGenBuffers(1, &ubo);
-            glBindBuffer(GL_UNIFORM_BUFFER, ubo);
-            glBufferData(GL_UNIFORM_BUFFER, size, nullptr, GL_DYNAMIC_DRAW);
-            glBindBufferBase(GL_UNIFORM_BUFFER, binding, ubo);
-            glBindBuffer(GL_UNIFORM_BUFFER, 0);
-        }
-    };
-    
-    ensure(m_uboW1, sizeof(float)*16*16, kBind_W1);
-    ensure(m_uboB1, sizeof(float)*4*4,   kBind_B1);
-    ensure(m_uboW2, sizeof(float)*16*16, kBind_W2);
-    ensure(m_uboB2, sizeof(float)*4*4,   kBind_B2);
-    ensure(m_uboW3, sizeof(float)*4*16,  kBind_W3);
-    ensure(m_uboB3, sizeof(float)*4,     kBind_B3);
+// ---------------------------------------------------------------------------
+// Viewer implementation
+// ---------------------------------------------------------------------------
+namespace viewer {
+
+Viewer::Viewer()
+    : m_camera(std::make_unique<OrbitCamera>()) {}
+
+Viewer::~Viewer() {
+    if (!m_window) return;
+
+    auto del_buf = [](GLuint& id) { if (id) { glDeleteBuffers(1, &id); id = 0; } };
+    auto del_tex = [](GLuint& id) { if (id) { glDeleteTextures(1, &id); id = 0; } };
+    auto del_vao = [](GLuint& id) { if (id) { glDeleteVertexArrays(1, &id); id = 0; } };
+    auto del_fbo = [](GLuint& id) { if (id) { glDeleteFramebuffers(1, &id); id = 0; } };
+    auto del_prg = [](GLuint& id) { if (id) { glDeleteProgram(id); id = 0; } };
+
+    del_prg(m_post_prog); del_vao(m_post_vao);
+    del_prg(m_geom_prog); del_buf(m_geom_vbo_pos); del_buf(m_geom_vbo_tid); del_vao(m_geom_vao);
+    del_tex(m_lut_tex[0]); del_tex(m_lut_tex[1]);
+    del_tex(m_tex_color[0]); del_tex(m_tex_color[1]); del_tex(m_tex_depth);
+    del_fbo(m_fbo);
+    del_buf(m_ubo_W1); del_buf(m_ubo_B1);
+    del_buf(m_ubo_W2); del_buf(m_ubo_B2);
+    del_buf(m_ubo_W3); del_buf(m_ubo_B3);
+
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
+    glfwDestroyWindow(m_window);
+    glfwTerminate();
 }
 
-void Viewer::upload_default_mlp_weights_as_ubos() {
-    ensure_ubo_alloc();
-    
-    // Upload zeros directly WITHOUT calling set_mlp_weights()
-    // This prevents overwriting the staged weights from the user
-    float zeros_256[16*16] = {0};  // for W1, W2
-    float zeros_16[16] = {0};       // for B1, B2  
-    float zeros_48[3*16] = {0};     // for W3
-    float zeros_4[4] = {0};         // for B3
-    
-    // Upload W1
-    glBindBuffer(GL_UNIFORM_BUFFER, m_uboW1);
-    glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(zeros_256), zeros_256);
-    glBindBuffer(GL_UNIFORM_BUFFER, 0);
-    
-    // Upload B1
-    glBindBuffer(GL_UNIFORM_BUFFER, m_uboB1);
-    glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(zeros_16), zeros_16);
-    glBindBuffer(GL_UNIFORM_BUFFER, 0);
-    
-    // Upload W2
-    glBindBuffer(GL_UNIFORM_BUFFER, m_uboW2);
-    glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(zeros_256), zeros_256);
-    glBindBuffer(GL_UNIFORM_BUFFER, 0);
-    
-    // Upload B2
-    glBindBuffer(GL_UNIFORM_BUFFER, m_uboB2);
-    glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(zeros_16), zeros_16);
-    glBindBuffer(GL_UNIFORM_BUFFER, 0);
-    
-    // Upload W3 (64 floats for 4 mat4s)
-    float zeros_64[64] = {0};
-    glBindBuffer(GL_UNIFORM_BUFFER, m_uboW3);
-    glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(zeros_64), zeros_64);
-    glBindBuffer(GL_UNIFORM_BUFFER, 0);
-    
-    // Upload B3
-    glBindBuffer(GL_UNIFORM_BUFFER, m_uboB3);
-    glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(zeros_4), zeros_4);
-    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+// ---------------------------------------------------------------------------
+// Data upload (pre-launch)
+// ---------------------------------------------------------------------------
+
+void Viewer::set_output_dir(const std::string& dir) {
+    m_output_dir = dir;
+    if (!m_output_dir.empty() && m_output_dir.back() != '/')
+        m_output_dir.push_back('/');
 }
 
-void Viewer::upload_mlp_weights_from_staging() {
-    if (!m_mlp_weights_pending) return;
-    
-    ensure_ubo_alloc();
-    
-    // Helper lambdas for uploading
-    auto upload_W_tiled = [](GLuint ubo, const float* W, int out_dim, int in_dim) {
-        if (!W) return;
-        
-        float tiles[16 * 16] = {0};
-        
-        // Weights are row-major: W[row][col] = W[row*in_dim + col]
-        // We need column-major mat4 blocks for GLSL
-        
-        for (int tile_row = 0; tile_row < 4; ++tile_row) {
-            for (int tile_col = 0; tile_col < 4; ++tile_col) {
-                int tile_idx = tile_row * 4 + tile_col;
-                
-                // Fill this mat4 in column-major order
-                for (int col = 0; col < 4; ++col) {
-                    for (int row = 0; row < 4; ++row) {
-                        int global_row = tile_row * 4 + row;
-                        int global_col = tile_col * 4 + col;
-                        
-                        if (global_row < out_dim && global_col < in_dim) {
-                            // Read from row-major, write to column-major
-                            tiles[tile_idx * 16 + col * 4 + row] = W[global_row * in_dim + global_col];
-                        }
-                    }
-                }
-            }
+void Viewer::set_mesh(int V, const float* verts, int F, const int* faces) {
+    m_pos_host.clear();
+    m_tid_host.clear();
+    m_vertex_count = 0;
+    m_face_count   = 0;
+
+    if (V <= 0 || F <= 0 || !verts || !faces) return;
+
+    m_pos_host.reserve(size_t(F) * 9);
+    m_tid_host.reserve(size_t(F) * 3);
+
+    for (int f = 0; f < F; ++f) {
+        const int i0 = faces[3*f], i1 = faces[3*f+1], i2 = faces[3*f+2];
+        if (i0 < 0 || i0 >= V || i1 < 0 || i1 >= V || i2 < 0 || i2 >= V) continue;
+        for (int vi : {i0, i1, i2}) {
+            m_pos_host.push_back(verts[vi*3]);
+            m_pos_host.push_back(verts[vi*3+1]);
+            m_pos_host.push_back(verts[vi*3+2]);
+            m_tid_host.push_back(uint32_t(f));
         }
-        
-        glBindBuffer(GL_UNIFORM_BUFFER, ubo);
-        glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(tiles), tiles);
-        glBindBuffer(GL_UNIFORM_BUFFER, 0);
-    };
-    
-    auto upload_B_grouped4 = [](GLuint ubo, const float* B, int dim) {
-        if (!B) return;
-        float b[16] = {0};
-        for (int i = 0; i < dim && i < 16; ++i) {
-            b[i] = B[i];
-        }
-        glBindBuffer(GL_UNIFORM_BUFFER, ubo);
-        glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(b), b);
-        glBindBuffer(GL_UNIFORM_BUFFER, 0);
-    };
-    
-    auto upload_W3 = [](GLuint ubo, const float* W3) {
-        if (!W3) return;
-        float tiles[4 * 16] = {0};
-        
-        // W3 is 3x16 row-major, we need 4 mat4s but only use first 3 rows
-        for (int tile_col = 0; tile_col < 4; ++tile_col) {
-            for (int col = 0; col < 4; ++col) {
-                for (int row = 0; row < 3; ++row) {  // Only 3 output dims
-                    int global_col = tile_col * 4 + col;
-                    if (global_col < 16) {
-                        // Read from row-major, write to column-major
-                        tiles[tile_col * 16 + col * 4 + row] = W3[row * 16 + global_col];
-                    }
-                }
-            }
-        }
-        
-        glBindBuffer(GL_UNIFORM_BUFFER, ubo);
-        glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(tiles), tiles);
-        glBindBuffer(GL_UNIFORM_BUFFER, 0);
-    };
-    
-    // Now upload from staging
-    if (!m_W1_staging.empty()) upload_W_tiled(m_uboW1, m_W1_staging.data(), 16, 16);
-    if (!m_b1_staging.empty()) upload_B_grouped4(m_uboB1, m_b1_staging.data(), 16);
-    if (!m_W2_staging.empty()) upload_W_tiled(m_uboW2, m_W2_staging.data(), 16, 16);
-    if (!m_b2_staging.empty()) upload_B_grouped4(m_uboB2, m_b2_staging.data(), 16);
-    if (!m_W3_staging.empty()) upload_W3(m_uboW3, m_W3_staging.data());
-    if (!m_b3_staging.empty()) {
-        float B3v[4] = { m_b3_staging[0], m_b3_staging[1], m_b3_staging[2], 0.0f };
-        glBindBuffer(GL_UNIFORM_BUFFER, m_uboB3);
-        glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(B3v), B3v);
-        glBindBuffer(GL_UNIFORM_BUFFER, 0);
     }
-    
-    m_mlp_weights_pending = false;
+    m_vertex_count = GLsizei(m_pos_host.size() / 3);
+    m_face_count   = F;
+    m_mesh_dirty   = true;
 }
 
-void Viewer::set_mlp_weights(
-    const float* W1, const float* b1,
-    const float* W2, const float* b2,
-    const float* W3, const float* b3,
-    float enc_freq
-) {
-    m_enc_freq = enc_freq;
-    
-    // Store weights for later upload
-    if (W1) m_W1_staging.assign(W1, W1 + 16*16);
-    if (b1) m_b1_staging.assign(b1, b1 + 16);
-    if (W2) m_W2_staging.assign(W2, W2 + 16*16);
-    if (b2) m_b2_staging.assign(b2, b2 + 16);
-    if (W3) m_W3_staging.assign(W3, W3 + 3*16);
-    if (b3) m_b3_staging.assign(b3, b3 + 3);
-    
-    m_mlp_weights_pending = true;
-    
-    // If GL is already initialized, upload immediately
-    if (m_started && m_window) {
-        upload_mlp_weights_from_staging();
+void Viewer::set_triangle_color_lut(int idx, int width, int height,
+                                    const unsigned char* rgba) {
+    if (idx != 0 && idx != 1) return;
+    m_lut_w = width;
+    m_lut_h = height;
+    m_lut_staging[idx].assign(rgba, rgba + size_t(width) * height * 4);
+    m_lut_pending[idx] = true;
+    if (m_gl_ready) upload_pending_luts();
+}
+
+void Viewer::set_mlp_weights(const float* W1, const float* b1,
+                             const float* W2, const float* b2,
+                             const float* W3, const float* b3) {
+    auto assign = [](std::vector<float>& dst, const float* src, size_t n) {
+        if (src) dst.assign(src, src + n); else dst.clear();
+    };
+    assign(m_W1, W1, 16*16);  assign(m_b1, b1, 16);
+    assign(m_W2, W2, 16*16);  assign(m_b2, b2, 16);
+    assign(m_W3, W3, 3*16);   assign(m_b3, b3, 3);
+    m_mlp_pending = true;
+    if (m_gl_ready) upload_pending_mlp();
+}
+
+void Viewer::set_camera_target(const float target[3]) {
+    m_camera->target = glm::vec3(target[0], target[1], target[2]);
+    m_camera->update();
+}
+
+// ---------------------------------------------------------------------------
+// GL initialisation
+// ---------------------------------------------------------------------------
+
+static void ensure_ubo(GLuint& ubo, GLsizeiptr bytes, GLuint binding) {
+    if (ubo) return;
+    glGenBuffers(1, &ubo);
+    glBindBuffer(GL_UNIFORM_BUFFER, ubo);
+    glBufferData(GL_UNIFORM_BUFFER, bytes, nullptr, GL_DYNAMIC_DRAW);
+    glBindBufferBase(GL_UNIFORM_BUFFER, binding, ubo);
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+}
+
+void Viewer::init_gl() {
+    if (m_gl_ready) return;
+
+    // Geometry pass
+    GL(glGenVertexArrays(1, &m_geom_vao));
+    GL(glGenBuffers(1, &m_geom_vbo_pos));
+    GL(glGenBuffers(1, &m_geom_vbo_tid));
+
+    {
+        GLuint vs = compile_shader(GL_VERTEX_SHADER,   kVS_Geom);
+        GLuint fs = compile_shader(GL_FRAGMENT_SHADER, kFS_Geom);
+        m_geom_prog = link_program(vs, fs);
+        glDeleteShader(vs); glDeleteShader(fs);
     }
-}
+    m_loc_mvp        = glGetUniformLocation(m_geom_prog, "uMVP");
+    m_loc_tri_tex0   = glGetUniformLocation(m_geom_prog, "uTriTex0");
+    m_loc_tri_tex1   = glGetUniformLocation(m_geom_prog, "uTriTex1");
+    m_loc_tri_tex_sz = glGetUniformLocation(m_geom_prog, "uTriTexSize");
+    m_loc_level      = glGetUniformLocation(m_geom_prog, "uLevel");
 
-void Viewer::set_camera_center(float cen[3]) {
-    m_camera->origin[0] = cen[0];
-    m_camera->origin[1] = cen[1];
-    m_camera->origin[2] = cen[2];
-    m_camera->_update();
-}
+    // Post / composite pass
+    {
+        GLuint vs = compile_shader(GL_VERTEX_SHADER,   kVS_Post);
+        GLuint fs = compile_shader(GL_FRAGMENT_SHADER, kFS_Post);
+        m_post_prog = link_program(vs, fs);
+        glDeleteShader(vs); glDeleteShader(fs);
+    }
+    m_post_loc_texA    = glGetUniformLocation(m_post_prog, "texA");
+    m_post_loc_texB    = glGetUniformLocation(m_post_prog, "texB");
+    m_post_loc_inv_mvp = glGetUniformLocation(m_post_prog, "uInvMVP");
 
-void Viewer::start() {
-    if (m_started || !m_window) return;
-
-    // Geometry VAO/VBOs
-    GL_CALL(glGenVertexArrays(1, &m_vao));
-    GL_CALL(glGenBuffers(1, &m_vbo_pos));
-    GL_CALL(glGenBuffers(1, &m_vbo_tid));
-
-    // First pass program
-    GLuint vs = compile_shader(GL_VERTEX_SHADER,   kVS_Geom);
-    GLuint fs = compile_shader(GL_FRAGMENT_SHADER, kFS_Geom);
-    m_prog = link_program(vs, fs);
-    glDeleteShader(vs); glDeleteShader(fs);
-    m_loc_uMVP        = glGetUniformLocation(m_prog, "uMVP");
-    m_loc_uTriTex0    = glGetUniformLocation(m_prog, "uTriTex0");
-    m_loc_uTriTex1    = glGetUniformLocation(m_prog, "uTriTex1");
-    m_loc_uTriTexSize = glGetUniformLocation(m_prog, "uTriTexSize");
-    m_loc_uLevel      = glGetUniformLocation(m_prog, "uLevel");
-
-    // Post/composite program
-    GLuint pvs = compile_shader(GL_VERTEX_SHADER, kVS_Post);
-    GLuint pfs = compile_shader(GL_FRAGMENT_SHADER, kFS_Post);
-    m_postProg = link_program(pvs, pfs);
-    glDeleteShader(pvs); glDeleteShader(pfs);
-    m_postLoc_texA = glGetUniformLocation(m_postProg, "texA");
-    m_postLoc_texB = glGetUniformLocation(m_postProg, "texB");
-    m_postLoc_uInvMVP  = glGetUniformLocation(m_postProg, "uInvMVP");
-    m_postLoc_uEncFreq = glGetUniformLocation(m_postProg, "uEncFreq");
     auto bind_block = [&](const char* name, GLuint binding) {
-        GLuint idx = glGetUniformBlockIndex(m_postProg, name);
-        if (idx != GL_INVALID_INDEX) {
-            glUniformBlockBinding(m_postProg, idx, binding);
-        }
+        GLuint idx = glGetUniformBlockIndex(m_post_prog, name);
+        if (idx != GL_INVALID_INDEX)
+            glUniformBlockBinding(m_post_prog, idx, binding);
     };
-    bind_block("W1Block", 0);
-    bind_block("B1Block", 1);
-    bind_block("W2Block", 2);
-    bind_block("B2Block", 3);
-    bind_block("W3Block", 4);
-    bind_block("B3Block", 5);
+    bind_block("W1Block", kBind_W1); bind_block("B1Block", kBind_B1);
+    bind_block("W2Block", kBind_W2); bind_block("B2Block", kBind_B2);
+    bind_block("W3Block", kBind_W3); bind_block("B3Block", kBind_B3);
 
-    // Post VAO
-    GL_CALL(glGenVertexArrays(1, &m_postVAO));
+    GL(glGenVertexArrays(1, &m_post_vao));
 
-    // Allocate UBOs + upload defaults
-    upload_default_mlp_weights_as_ubos();
-    upload_mlp_weights_from_staging();
+    // UBOs (zero-initialised)
+    ensure_ubo(m_ubo_W1, sizeof(float)*16*16, kBind_W1);
+    ensure_ubo(m_ubo_B1, sizeof(float)*16,    kBind_B1);
+    ensure_ubo(m_ubo_W2, sizeof(float)*16*16, kBind_W2);
+    ensure_ubo(m_ubo_B2, sizeof(float)*16,    kBind_B2);
+    ensure_ubo(m_ubo_W3, sizeof(float)*4*16,  kBind_W3);
+    ensure_ubo(m_ubo_B3, sizeof(float)*4,     kBind_B3);
 
-    m_started = true;
+    m_gl_ready = true;
+
+    // Flush any data that was staged before GL context existed.
+    upload_mesh_to_gpu();
+    upload_pending_luts();
+    upload_pending_mlp();
 }
 
-static void create_or_upload_lut(GLuint& tex, int W, int H, const std::vector<unsigned char>& rgba) {
+// ---------------------------------------------------------------------------
+// GPU uploads
+// ---------------------------------------------------------------------------
+
+void Viewer::upload_mesh_to_gpu() {
+    if (!m_mesh_dirty || !m_gl_ready) return;
+    if (m_pos_host.empty()) { m_mesh_dirty = false; return; }
+
+    GL(glBindVertexArray(m_geom_vao));
+
+    GL(glBindBuffer(GL_ARRAY_BUFFER, m_geom_vbo_pos));
+    GL(glBufferData(GL_ARRAY_BUFFER,
+                    m_pos_host.size() * sizeof(float),
+                    m_pos_host.data(), GL_STATIC_DRAW));
+    GL(glEnableVertexAttribArray(0));
+    GL(glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, nullptr));
+
+    GL(glBindBuffer(GL_ARRAY_BUFFER, m_geom_vbo_tid));
+    GL(glBufferData(GL_ARRAY_BUFFER,
+                    m_tid_host.size() * sizeof(uint32_t),
+                    m_tid_host.data(), GL_STATIC_DRAW));
+    GL(glEnableVertexAttribArray(1));
+    GL(glVertexAttribIPointer(1, 1, GL_UNSIGNED_INT, 0, nullptr));
+
+    GL(glBindVertexArray(0));
+    m_mesh_dirty = false;
+}
+
+static void upload_lut_tex(GLuint& tex, int W, int H,
+                           const std::vector<unsigned char>& rgba) {
     if (!tex) glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, W, H, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, W, H, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
-void Viewer::ensure_luts_uploaded() {
-    if (!m_started || !m_window) return;
+void Viewer::upload_pending_luts() {
+    if (!m_gl_ready) return;
     for (int i = 0; i < 2; ++i) {
-        if (!m_triTexPending[i]) continue;
-        if (m_triTexW <= 0 || m_triTexH <= 0) continue;
-        if ((int)m_triTexStaging[i].size() != m_triTexW * m_triTexH * 4) continue;
-
-        create_or_upload_lut(m_triTex[i], m_triTexW, m_triTexH, m_triTexStaging[i]);
-        m_triTexReady[i]   = true;
-        m_triTexPending[i] = false;
-        m_triTexStaging[i].clear();
-        m_triTexStaging[i].shrink_to_fit();
+        if (!m_lut_pending[i]) continue;
+        if (m_lut_w <= 0 || m_lut_h <= 0) continue;
+        if (int(m_lut_staging[i].size()) != m_lut_w * m_lut_h * 4) continue;
+        upload_lut_tex(m_lut_tex[i], m_lut_w, m_lut_h, m_lut_staging[i]);
+        m_lut_ready[i]   = true;
+        m_lut_pending[i] = false;
+        m_lut_staging[i] = {};  // free staging memory
     }
 }
 
-void Viewer::ensure_default_luts() {
-    auto make_default = [](int W, int H) {
-        std::vector<unsigned char> pix(W*H*4);
-        for (int i = 0; i < W*H; ++i) {
-            float t = (W*H > 1) ? float(i) / float(W*H - 1) : 0.f;
-            pix[4*i+0] = (unsigned char)(255.0f * t);
-            pix[4*i+1] = (unsigned char)(255.0f * (1.0f - t));
-            pix[4*i+2] = 128;
-            pix[4*i+3] = 255;
-        }
-        return pix;
+/// Tile a row-major weight matrix into column-major mat4 blocks for std140.
+static void tile_weights(float* dst, const float* src,
+                         int out_dim, int in_dim) {
+    std::memset(dst, 0, sizeof(float) * 16 * 16);
+    for (int tr = 0; tr < 4; ++tr)
+        for (int tc = 0; tc < 4; ++tc)
+            for (int c = 0; c < 4; ++c)
+                for (int r = 0; r < 4; ++r) {
+                    int gr = tr * 4 + r, gc = tc * 4 + c;
+                    if (gr < out_dim && gc < in_dim)
+                        dst[(tr*4+tc)*16 + c*4 + r] = src[gr * in_dim + gc];
+                }
+}
+
+void Viewer::upload_pending_mlp() {
+    if (!m_mlp_pending || !m_gl_ready) return;
+
+    auto upload_buf = [](GLuint ubo, const void* data, GLsizeiptr bytes) {
+        glBindBuffer(GL_UNIFORM_BUFFER, ubo);
+        glBufferSubData(GL_UNIFORM_BUFFER, 0, bytes, data);
+        glBindBuffer(GL_UNIFORM_BUFFER, 0);
     };
 
-    const int W = (m_triTexW > 0 ? m_triTexW : 4);
-    const int H = (m_triTexH > 0 ? m_triTexH : 4);
+    float tiles[16*16];
 
-    for (int i = 0; i < 2; ++i) {
-        if (m_triTexReady[i] || m_triTexPending[i]) continue;
-        auto pix = make_default(W, H);
-        set_triangle_color_lut(i, W, H, pix.data());
+    if (!m_W1.empty()) { tile_weights(tiles, m_W1.data(), 16, 16); upload_buf(m_ubo_W1, tiles, sizeof(tiles)); }
+    if (!m_b1.empty()) { float b[16]={}; std::copy_n(m_b1.data(), 16, b); upload_buf(m_ubo_B1, b, sizeof(b)); }
+    if (!m_W2.empty()) { tile_weights(tiles, m_W2.data(), 16, 16); upload_buf(m_ubo_W2, tiles, sizeof(tiles)); }
+    if (!m_b2.empty()) { float b[16]={}; std::copy_n(m_b2.data(), 16, b); upload_buf(m_ubo_B2, b, sizeof(b)); }
+
+    if (!m_W3.empty()) {
+        // W3 is 3×16 → 1 block-row of 4 mat4s, only first 3 rows used.
+        float t3[4*16] = {};
+        for (int tc = 0; tc < 4; ++tc)
+            for (int c = 0; c < 4; ++c)
+                for (int r = 0; r < 3; ++r) {
+                    int gc = tc * 4 + c;
+                    if (gc < 16)
+                        t3[tc*16 + c*4 + r] = m_W3[r * 16 + gc];
+                }
+        upload_buf(m_ubo_W3, t3, sizeof(t3));
     }
+    if (!m_b3.empty()) {
+        float b[4] = { m_b3[0], m_b3[1], m_b3[2], 0.f };
+        upload_buf(m_ubo_B3, b, sizeof(b));
+    }
+
+    m_mlp_pending = false;
 }
 
-void Viewer::ensure_gl_upload() {
-    if (!m_need_gl_upload || !m_started) return;
-    if (m_pos_dup_host.empty() || m_tid_dup_host.empty()) {
-        m_need_gl_upload = false;
-        return;
-    }
+// ---------------------------------------------------------------------------
+// FBO resize
+// ---------------------------------------------------------------------------
 
-    GL_CALL(glBindVertexArray(m_vao));
-
-    GL_CALL(glBindBuffer(GL_ARRAY_BUFFER, m_vbo_pos));
-    GL_CALL(glBufferData(GL_ARRAY_BUFFER,
-                         m_pos_dup_host.size() * sizeof(float),
-                         m_pos_dup_host.data(),
-                         GL_STATIC_DRAW));
-    GL_CALL(glEnableVertexAttribArray(0));
-    GL_CALL(glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(float)*3, (void*)0));
-
-    GL_CALL(glBindBuffer(GL_ARRAY_BUFFER, m_vbo_tid));
-    GL_CALL(glBufferData(GL_ARRAY_BUFFER,
-                         m_tid_dup_host.size() * sizeof(uint32_t),
-                         m_tid_dup_host.data(),
-                         GL_STATIC_DRAW));
-    GL_CALL(glEnableVertexAttribArray(1));
-    GL_CALL(glVertexAttribIPointer(1, 1, GL_UNSIGNED_INT, sizeof(uint32_t), (void*)0));
-
-    GL_CALL(glBindVertexArray(0));
-
-    m_vertex_count = (GLsizei)(m_pos_dup_host.size() / 3);
-    m_need_gl_upload = false;
-}
-
-void Viewer::resize(int width, int height) {
+void Viewer::resize_fbo(int width, int height) {
     if (width == m_camera->width && height == m_camera->height) return;
-
-    start();
     m_camera->width  = width;
     m_camera->height = height;
 
-    if (!m_FBO) glGenFramebuffers(1, &m_FBO);
-    glBindFramebuffer(GL_FRAMEBUFFER, m_FBO);
+    if (!m_fbo) glGenFramebuffers(1, &m_fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
 
     for (int i = 0; i < 2; ++i) {
         if (!m_tex_color[i]) glGenTextures(1, &m_tex_color[i]);
         glBindTexture(GL_TEXTURE_2D, m_tex_color[i]);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0,
                      GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-        glFramebufferTexture2D(GL_FRAMEBUFFER,
-            GL_COLOR_ATTACHMENT0 + i, GL_TEXTURE_2D, m_tex_color[i], 0);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i,
+                               GL_TEXTURE_2D, m_tex_color[i], 0);
     }
 
     if (!m_tex_depth) glGenTextures(1, &m_tex_depth);
     glBindTexture(GL_TEXTURE_2D, m_tex_depth);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, width, height, 0,
                  GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, nullptr);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, m_tex_depth, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                           GL_TEXTURE_2D, m_tex_depth, 0);
 
-    GLenum draw_buffers[2] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
-    glDrawBuffers(2, draw_buffers);
+    GLenum bufs[2] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
+    glDrawBuffers(2, bufs);
 
-    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-    if (status != GL_FRAMEBUFFER_COMPLETE) {
-        std::cerr << "[viewer] FBO incomplete: 0x" << std::hex << status << std::dec << std::endl;
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        std::cerr << "[viewer] FBO incomplete\n";
         std::exit(EXIT_FAILURE);
     }
-
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-    ensure_gl_upload();
 }
 
-void Viewer::_mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {
-    ImGui_ImplGlfw_MouseButtonCallback(window, button, action, mods);
-    if (ImGui::GetIO().WantCaptureMouse) return;
-    auto &cam = *m_camera;
-    double x, y;
-    glfwGetCursorPos(window, &x, &y);
-    if (action == GLFW_PRESS) {
-        const bool SHIFT = mods & GLFW_MOD_SHIFT;
-        cam.begin_drag((float)x, (float)y,
-                       SHIFT || button == GLFW_MOUSE_BUTTON_MIDDLE,
-                       button == GLFW_MOUSE_BUTTON_RIGHT ||
-                       (button == GLFW_MOUSE_BUTTON_MIDDLE && SHIFT));
-    } else if (action == GLFW_RELEASE) {
-        cam.end_drag();
-    }
-}
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
 
-void Viewer::_cursor_pos_callback(GLFWwindow* window, double x, double y) {
-    (void)window;
-    m_camera->drag_update((float)x, (float)y);
-}
+void Viewer::render(const glm::mat4& mvp) {
+    const int w = m_camera->width, h = m_camera->height;
 
-void Viewer::_scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
-    ImGui_ImplGlfw_ScrollCallback(window, xoffset, yoffset);
-    if (ImGui::GetIO().WantCaptureMouse) return;
-    auto &cam = *m_camera;
-    const float speed_fact = 1e-1f;
-    cam.move(cam.v_back * ((yoffset < 0.f) ? speed_fact : -speed_fact));
-}
+    // Pass 0 — rasterise mesh into two colour attachments.
+    GL(glBindFramebuffer(GL_FRAMEBUFFER, m_fbo));
+    GL(glViewport(0, 0, w, h));
 
-void Viewer::_window_size_callback(GLFWwindow* window, int width, int height) {
-    (void)window;
-    GL_CALL(glViewport(0, 0, width, height));
-    resize(width, height);
-}
+    const float bg = m_options.background_brightness;
+    const GLfloat clear_a[] = { bg, bg, bg, 1.f };
+    const GLfloat clear_b[] = { bg, bg, bg, 0.f };
+    GL(glClearBufferfv(GL_COLOR, 0, clear_a));
+    GL(glClearBufferfv(GL_COLOR, 1, clear_b));
+    GL(glClear(GL_DEPTH_BUFFER_BIT));
 
-void Viewer::render() {
-    start();
-    ensure_gl_upload();
-    ensure_luts_uploaded();
-    ensure_default_luts();
+    if (m_vertex_count > 0 && m_geom_vao && m_options.render_geometry) {
+        GL(glEnable(GL_DEPTH_TEST));
+        GL(glDisable(GL_BLEND));
+        GL(glDisable(GL_CULL_FACE));
 
-    // ---- pass 0: raster into COLOR0/1 ----
-    glBindFramebuffer(GL_FRAMEBUFFER, m_FBO);
-    glViewport(0, 0, m_camera->width, m_camera->height);
+        GL(glUseProgram(m_geom_prog));
+        GL(glUniformMatrix4fv(m_loc_mvp, 1, GL_FALSE, glm::value_ptr(mvp)));
+        GL(glUniform1i(m_loc_tri_tex0, 0));
+        GL(glUniform1i(m_loc_tri_tex1, 1));
+        GL(glUniform2i(m_loc_tri_tex_sz, m_lut_w, m_lut_h));
+        GL(glUniform1i(m_loc_level, m_level));
 
-    const GLfloat clear0[] = {
-        m_options.background_brightness,
-        m_options.background_brightness,
-        m_options.background_brightness,
-        1.0f
-    };
-    const GLfloat clear1[] = {
-        m_options.background_brightness,
-        m_options.background_brightness,
-        m_options.background_brightness,
-        0.0f
-    };
-    glClearBufferfv(GL_COLOR, 0, clear0);
-    glClearBufferfv(GL_COLOR, 1, clear1);
-    glClear(GL_DEPTH_BUFFER_BIT);
+        GL(glActiveTexture(GL_TEXTURE0)); GL(glBindTexture(GL_TEXTURE_2D, m_lut_tex[0]));
+        GL(glActiveTexture(GL_TEXTURE1)); GL(glBindTexture(GL_TEXTURE_2D, m_lut_tex[1]));
 
-    // --------------------------------------------------
-    // MVP SELECTION LOGIC
-    // --------------------------------------------------
-    glm::mat4 mvp;
-    if (!m_benchmark_mode) {
-        // Interactive viewer path (camera-driven)
-        m_camera->_update();
-        mvp = m_camera->K * m_camera->w2c;
-    } else {
-        // Benchmark path (external MVP supplied)
-        mvp = m_benchmark_mvp;
-    }
-    // --------------------------------------------------
-
-    if (m_triangles && m_vertex_count > 0 && m_vao && m_options.render_geometry) {
-        glEnable(GL_DEPTH_TEST);
-        glDisable(GL_BLEND);
-        glDisable(GL_CULL_FACE);
-
-        glUseProgram(m_prog);
-        glUniformMatrix4fv(m_loc_uMVP, 1, GL_FALSE, glm::value_ptr(mvp));
-
-        glUniform1i(m_loc_uTriTex0, 0);
-        glUniform1i(m_loc_uTriTex1, 1);
-        glUniform2i(m_loc_uTriTexSize, m_triTexW, m_triTexH);
-        glUniform1i(m_loc_uLevel, m_level);
-
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, m_triTex[0]);
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, m_triTex[1]);
-
-        glBindVertexArray(m_vao);
-        glDrawArrays(GL_TRIANGLES, 0, m_vertex_count);
-        glBindVertexArray(0);
-
-        glBindTexture(GL_TEXTURE_2D, 0);
-        glUseProgram(0);
+        GL(glBindVertexArray(m_geom_vao));
+        GL(glDrawArrays(GL_TRIANGLES, 0, m_vertex_count));
+        GL(glBindVertexArray(0));
+        GL(glUseProgram(0));
     }
 
-    // ---- pass 1: composite to screen via UBO-backed MLP ----
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glViewport(0, 0, m_camera->width, m_camera->height);
+    // Pass 1 — composite to default framebuffer via MLP.
+    GL(glBindFramebuffer(GL_FRAMEBUFFER, 0));
+    GL(glViewport(0, 0, w, h));
+    GL(glDisable(GL_DEPTH_TEST));
 
-    glDisable(GL_DEPTH_TEST);
-    glUseProgram(m_postProg);
+    GL(glUseProgram(m_post_prog));
+    GL(glUniform1i(m_post_loc_texA, 0));
+    GL(glUniform1i(m_post_loc_texB, 1));
 
-    glUniform1i(m_postLoc_texA, 0);
-    glUniform1i(m_postLoc_texB, 1);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, m_tex_color[0]);
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, m_tex_color[1]);
+    GL(glActiveTexture(GL_TEXTURE0)); GL(glBindTexture(GL_TEXTURE_2D, m_tex_color[0]));
+    GL(glActiveTexture(GL_TEXTURE1)); GL(glBindTexture(GL_TEXTURE_2D, m_tex_color[1]));
 
-    // NOTE:
-    // invMVP must correspond to the SAME MVP used in geometry pass
-    glm::mat4 invMVP = glm::inverse(mvp);
-    glUniformMatrix4fv(m_postLoc_uInvMVP, 1, GL_FALSE, glm::value_ptr(invMVP));
-    glUniform1f(m_postLoc_uEncFreq, m_enc_freq);
+    glm::mat4 inv_mvp = glm::inverse(mvp);
+    GL(glUniformMatrix4fv(m_post_loc_inv_mvp, 1, GL_FALSE, glm::value_ptr(inv_mvp)));
 
-    glBindVertexArray(m_postVAO);
-    glDrawArrays(GL_TRIANGLES, 0, 3);
-    glBindVertexArray(0);
-
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glUseProgram(0);
-
-    // ---- UI (disabled during benchmark) ----
-    if (!m_benchmark_mode) {
-        // draw_gui();
-    }
+    GL(glBindVertexArray(m_post_vao));
+    GL(glDrawArrays(GL_TRIANGLES, 0, 3));
+    GL(glBindVertexArray(0));
+    GL(glUseProgram(0));
 }
 
-void Viewer::launch(int nw, int nh) {
-    if (m_window != nullptr) return;
-
-    m_window = ::glfw_init(nw, nh);
-    start();
-
-    int width, height;
-    glfwGetFramebufferSize(m_window, &width, &height);
-    resize(width, height);
-
-    glfwSetWindowUserPointer(m_window, this);
-    glfwSetMouseButtonCallback(m_window, ::glfw_mouse_button_callback);
-    glfwSetCursorPosCallback(m_window, ::glfw_cursor_pos_callback);
-    glfwSetScrollCallback(m_window, ::glfw_scroll_callback);
-    glfwSetFramebufferSizeCallback(m_window, ::glfw_window_size_callback);
-
-    while (!glfwWindowShouldClose(m_window)) {
-        glEnable(GL_DEPTH_TEST);
-        ::glfw_update_title(m_window);
-
-        render();
-
-        glfwSwapBuffers(m_window);
-        glfwPollEvents();
-    }
-}
-
-void Viewer::set_output_dir(std::string output_dir) {
-    if (output_dir.empty()) return;
-    if (output_dir.back() != '/') output_dir.push_back('/');
-    m_output_dir = std::move(output_dir);
-}
-
-void Viewer::set_triangles(int V, const float* verts, int F, const int* faces) {
-    if (V <= 0 || F <= 0 || !verts || !faces) {
-        m_vertex_count = 0;
-        m_pos_dup_host.clear();
-        m_tid_dup_host.clear();
-        m_need_gl_upload = false;
-        return;
-    }
-
-    m_triangles = std::make_unique<Triangles>(V, verts, F, faces);
-
-    m_pos_dup_host.clear();
-    m_tid_dup_host.clear();
-    m_pos_dup_host.reserve(size_t(F) * 3 * 3);
-    m_tid_dup_host.reserve(size_t(F) * 3);
-
-    for (int f = 0; f < F; ++f) {
-        const int i0 = faces[3*f + 0];
-        const int i1 = faces[3*f + 1];
-        const int i2 = faces[3*f + 2];
-        if (i0 < 0 || i0 >= V || i1 < 0 || i1 >= V || i2 < 0 || i2 >= V) continue;
-
-        const float* p0 = &verts[i0*3];
-        const float* p1 = &verts[i1*3];
-        const float* p2 = &verts[i2*3];
-
-        m_pos_dup_host.insert(m_pos_dup_host.end(), {
-            p0[0], p0[1], p0[2],
-            p1[0], p1[1], p1[2],
-            p2[0], p2[1], p2[2]
-        });
-        m_tid_dup_host.push_back(uint32_t(f));
-        m_tid_dup_host.push_back(uint32_t(f));
-        m_tid_dup_host.push_back(uint32_t(f));
-    }
-
-    m_vertex_count = (GLsizei)(m_pos_dup_host.size() / 3);
-    m_need_gl_upload = true;
-}
-
-void Viewer::set_triangle_color_lut(int idx, int width, int height, const unsigned char* rgba) {
-    if (idx != 0 && idx != 1) return;
-    m_triTexW = width;
-    m_triTexH = height;
-    m_triTexStaging[idx].assign(rgba, rgba + (size_t)width * height * 4);
-    m_triTexPending[idx] = true;
-
-    if (m_started && m_window) ensure_luts_uploaded();
-}
+// ---------------------------------------------------------------------------
+// GUI
+// ---------------------------------------------------------------------------
 
 void Viewer::draw_gui() {
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
-    ImGui::SetNextWindowPos(ImVec2(20.f, 20.f), ImGuiCond_Once);
-    ImGui::SetNextWindowSize(ImVec2(300., 400.f), ImGuiCond_Once);
-    ImGui::Begin("GUI");
+    ImGui::SetNextWindowPos(ImVec2(20, 20), ImGuiCond_Once);
+    ImGui::SetNextWindowSize(ImVec2(280, 200), ImGuiCond_Once);
+    ImGui::Begin("Settings");
 
-    ImGui::Text("Window: %dx%d", m_camera->width, m_camera->height);
+    ImGui::Text("Resolution: %dx%d", m_camera->width, m_camera->height);
+    ImGui::Text("Faces: %d", m_face_count);
+    ImGui::SliderFloat("Background", &m_options.background_brightness, 0.f, 1.f);
 
-    if (!m_output_dir.empty()) {
-        if (ImGui::Button("save screenshot (ppm)")) {
-            const auto output_path = m_output_dir + "screenshot.ppm";
-            std::cout << "saving screenshot in " << output_path << std::endl;
-
-            int width = m_camera->width, height = m_camera->height;
-            std::vector<unsigned char> window_pixels(4 * width * height);
-            glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, window_pixels.data());
-
-            std::vector<unsigned char> flipped_pixels(4 * width * height);
-            for (int row=0; row<height; ++row) {
-                std::memcpy(&flipped_pixels[row * width * 4],
-                            &window_pixels[(height - row - 1) * width * 4], 4 * width);
-            }
-
-            write_ppm(output_path.c_str(), width, height, flipped_pixels.data());
-        }
-    }
-
-    if (ImGui::CollapsingHeader("Rendering", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::SliderFloat("Background Brightness", &m_options.background_brightness, 0.0f, 1.0f);
-        ImGui::Checkbox("render_geometry", &m_options.render_geometry);
-        ImGui::Text("Tri LUT: %s (%dx%d)",
-            (m_triTexReady[0] && m_triTexReady[1]) ? "both set" :
-            (m_triTexReady[0] || m_triTexReady[1]) ? "one set" : "default",
-            m_triTexW, m_triTexH);
-        if (m_triangles) {
-            ImGui::Text("Faces: %d", m_triangles->F_);
-        }
-        static const char* levels[] = { "0", "1", "2", "3", "4", "5" };
-        ImGui::Combo("Texture level (DEBUG)", &m_level, levels, IM_ARRAYSIZE(levels));
+    if (!m_output_dir.empty() && ImGui::Button("Save screenshot")) {
+        int w = m_camera->width, h = m_camera->height;
+        std::vector<unsigned char> px(4 * w * h), flipped(4 * w * h);
+        glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+        for (int row = 0; row < h; ++row)
+            std::memcpy(&flipped[row * w * 4],
+                        &px[(h - 1 - row) * w * 4], size_t(w) * 4);
+        write_ppm((m_output_dir + "screenshot.ppm").c_str(), w, h, flipped.data());
     }
 
     ImGui::End();
@@ -1094,280 +751,226 @@ void Viewer::draw_gui() {
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 }
 
-void Viewer::launch_benchmark(
-    int width,
-    int height,
-    int B,
-    const float* mvps,
-    int warmup_frames,
-    int save_every
-) {
-    m_window = ::glfw_init(width, height);
-    start();
-    resize(width, height);
+// ---------------------------------------------------------------------------
+// Input callbacks
+// ---------------------------------------------------------------------------
+
+void Viewer::on_mouse_button(GLFWwindow* /*win*/, int button, int action, int mods) {
+    if (ImGui::GetIO().WantCaptureMouse) return;
+
+    if (action == GLFW_PRESS) {
+        double x, y;
+        glfwGetCursorPos(m_window, &x, &y);
+        bool pan = (button == GLFW_MOUSE_BUTTON_RIGHT) ||
+                   (button == GLFW_MOUSE_BUTTON_MIDDLE) ||
+                   (mods & GLFW_MOD_SHIFT);
+        m_camera->begin_drag(float(x), float(y), pan);
+    } else if (action == GLFW_RELEASE) {
+        m_camera->end_drag();
+    }
+}
+
+void Viewer::on_cursor_pos(GLFWwindow* /*win*/, double x, double y) {
+    m_camera->drag_update(float(x), float(y));
+}
+
+void Viewer::on_scroll(GLFWwindow* /*win*/, double /*xoff*/, double yoff) {
+    if (ImGui::GetIO().WantCaptureMouse) return;
+    m_camera->scroll(float(yoff));
+}
+
+void Viewer::on_framebuffer_size(GLFWwindow* /*win*/, int w, int h) {
+    resize_fbo(w, h);
+}
+
+// ---------------------------------------------------------------------------
+// Interactive launch
+// ---------------------------------------------------------------------------
+
+void Viewer::launch(int w, int h) {
+    if (m_window) return;
+    m_window = create_window(w, h, "Viewer");
+    init_gl();
+
+    int fw, fh;
+    glfwGetFramebufferSize(m_window, &fw, &fh);
+    resize_fbo(fw, fh);
 
     glfwSetWindowUserPointer(m_window, this);
+    glfwSetMouseButtonCallback(m_window, [](GLFWwindow* w, int b, int a, int m) {
+        GET_VIEWER(w)->on_mouse_button(w, b, a, m);
+    });
+    glfwSetCursorPosCallback(m_window, [](GLFWwindow* w, double x, double y) {
+        GET_VIEWER(w)->on_cursor_pos(w, x, y);
+    });
+    glfwSetScrollCallback(m_window, [](GLFWwindow* w, double x, double y) {
+        GET_VIEWER(w)->on_scroll(w, x, y);
+    });
+    glfwSetFramebufferSizeCallback(m_window, [](GLFWwindow* w, int fw, int fh) {
+        GET_VIEWER(w)->on_framebuffer_size(w, fw, fh);
+    });
 
-    std::vector<double> times_ms;
-    times_ms.reserve(B);
-
-    // Enable benchmark mode (disables camera MVP path)
-    m_benchmark_mode = true;
-
-    // Make sure uploads are ready
-    ensure_gl_upload();
-    ensure_luts_uploaded();
-    ensure_default_luts();
-    upload_mlp_weights_from_staging();
-
-    // Resolve output directory prefix
-    std::string out_dir = m_output_dir;
-    if (!out_dir.empty() && out_dir.back() != '/')
-        out_dir.push_back('/');
-
-    // ------------------------------------------------------------
-    // Create an OFFSCREEN final-RGB framebuffer at (width,height)
-    // ------------------------------------------------------------
-    GLuint finalFBO = 0;
-    GLuint finalTex = 0;
-
-    GL_CALL(glGenFramebuffers(1, &finalFBO));
-    GL_CALL(glBindFramebuffer(GL_FRAMEBUFFER, finalFBO));
-
-    GL_CALL(glGenTextures(1, &finalTex));
-    GL_CALL(glBindTexture(GL_TEXTURE_2D, finalTex));
-    GL_CALL(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST));
-    GL_CALL(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST));
-    GL_CALL(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE));
-    GL_CALL(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE));
-    GL_CALL(glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0,
-                         GL_RGBA, GL_UNSIGNED_BYTE, nullptr));
-
-    GL_CALL(glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                                   GL_TEXTURE_2D, finalTex, 0));
-
-    {
-        GLenum drawBuf = GL_COLOR_ATTACHMENT0;
-        GL_CALL(glDrawBuffers(1, &drawBuf));
+    while (!glfwWindowShouldClose(m_window)) {
+        update_title(m_window);
+        m_camera->update();
+        render(m_camera->mvp());
+        draw_gui();
+        glfwSwapBuffers(m_window);
+        glfwPollEvents();
     }
+}
 
-    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-    if (status != GL_FRAMEBUFFER_COMPLETE) {
-        std::cerr << "[viewer] finalFBO incomplete: 0x"
-                  << std::hex << status << std::dec << std::endl;
+// ---------------------------------------------------------------------------
+// Benchmark
+// ---------------------------------------------------------------------------
+
+void Viewer::launch_benchmark(int width, int height,
+                              int B, const float* mvps,
+                              int warmup_frames, int save_every) {
+    m_window = create_window(width, height, "Benchmark");
+    init_gl();
+    resize_fbo(width, height);
+
+    // Off-screen FBO for readback.
+    GLuint final_fbo = 0, final_tex = 0;
+    GL(glGenFramebuffers(1, &final_fbo));
+    GL(glBindFramebuffer(GL_FRAMEBUFFER, final_fbo));
+
+    GL(glGenTextures(1, &final_tex));
+    GL(glBindTexture(GL_TEXTURE_2D, final_tex));
+    GL(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST));
+    GL(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST));
+    GL(glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0,
+                    GL_RGBA, GL_UNSIGNED_BYTE, nullptr));
+    GL(glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                              GL_TEXTURE_2D, final_tex, 0));
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        std::cerr << "[viewer] benchmark FBO incomplete\n";
         std::exit(EXIT_FAILURE);
     }
+    GL(glBindFramebuffer(GL_FRAMEBUFFER, 0));
 
-    GL_CALL(glBindFramebuffer(GL_FRAMEBUFFER, 0));
-
-    // ------------------------------------------------------------
-    // Helper: render one frame using provided MVP
-    // ------------------------------------------------------------
+    // Helper: render one frame, then blit to final_fbo.
     auto render_one = [&](const glm::mat4& mvp) {
-        // PASS 0: geometry -> m_FBO
-        GL_CALL(glBindFramebuffer(GL_FRAMEBUFFER, m_FBO));
-        GL_CALL(glViewport(0, 0, width, height));
+        // Pass 0 → m_fbo
+        GL(glBindFramebuffer(GL_FRAMEBUFFER, m_fbo));
+        GL(glViewport(0, 0, width, height));
 
-        const GLfloat clear0[] = {
-            m_options.background_brightness,
-            m_options.background_brightness,
-            m_options.background_brightness,
-            1.0f
-        };
-        const GLfloat clear1[] = {
-            m_options.background_brightness,
-            m_options.background_brightness,
-            m_options.background_brightness,
-            0.0f
-        };
+        const float bg = m_options.background_brightness;
+        const GLfloat c0[] = {bg,bg,bg,1.f}, c1[] = {bg,bg,bg,0.f};
+        GL(glClearBufferfv(GL_COLOR, 0, c0));
+        GL(glClearBufferfv(GL_COLOR, 1, c1));
+        GL(glClear(GL_DEPTH_BUFFER_BIT));
 
-        GL_CALL(glClearBufferfv(GL_COLOR, 0, clear0));
-        GL_CALL(glClearBufferfv(GL_COLOR, 1, clear1));
-        GL_CALL(glClear(GL_DEPTH_BUFFER_BIT));
-
-        if (m_triangles && m_vertex_count > 0 && m_vao && m_options.render_geometry) {
-            GL_CALL(glEnable(GL_DEPTH_TEST));
-            GL_CALL(glDisable(GL_BLEND));
-            GL_CALL(glDisable(GL_CULL_FACE));
-
-            GL_CALL(glUseProgram(m_prog));
-            GL_CALL(glUniformMatrix4fv(m_loc_uMVP, 1, GL_FALSE, glm::value_ptr(mvp)));
-
-            GL_CALL(glUniform1i(m_loc_uTriTex0, 0));
-            GL_CALL(glUniform1i(m_loc_uTriTex1, 1));
-            GL_CALL(glUniform2i(m_loc_uTriTexSize, m_triTexW, m_triTexH));
-            GL_CALL(glUniform1i(m_loc_uLevel, m_level));
-
-            GL_CALL(glActiveTexture(GL_TEXTURE0));
-            GL_CALL(glBindTexture(GL_TEXTURE_2D, m_triTex[0]));
-            GL_CALL(glActiveTexture(GL_TEXTURE1));
-            GL_CALL(glBindTexture(GL_TEXTURE_2D, m_triTex[1]));
-
-            GL_CALL(glBindVertexArray(m_vao));
-            GL_CALL(glDrawArrays(GL_TRIANGLES, 0, m_vertex_count));
-            GL_CALL(glBindVertexArray(0));
-
-            GL_CALL(glBindTexture(GL_TEXTURE_2D, 0));
-            GL_CALL(glUseProgram(0));
+        if (m_vertex_count > 0 && m_geom_vao && m_options.render_geometry) {
+            GL(glEnable(GL_DEPTH_TEST));
+            GL(glDisable(GL_BLEND));
+            GL(glDisable(GL_CULL_FACE));
+            GL(glUseProgram(m_geom_prog));
+            GL(glUniformMatrix4fv(m_loc_mvp, 1, GL_FALSE, glm::value_ptr(mvp)));
+            GL(glUniform1i(m_loc_tri_tex0, 0));
+            GL(glUniform1i(m_loc_tri_tex1, 1));
+            GL(glUniform2i(m_loc_tri_tex_sz, m_lut_w, m_lut_h));
+            GL(glUniform1i(m_loc_level, m_level));
+            GL(glActiveTexture(GL_TEXTURE0)); GL(glBindTexture(GL_TEXTURE_2D, m_lut_tex[0]));
+            GL(glActiveTexture(GL_TEXTURE1)); GL(glBindTexture(GL_TEXTURE_2D, m_lut_tex[1]));
+            GL(glBindVertexArray(m_geom_vao));
+            GL(glDrawArrays(GL_TRIANGLES, 0, m_vertex_count));
+            GL(glBindVertexArray(0));
+            GL(glUseProgram(0));
         }
 
-        // PASS 1: post/MLP -> finalFBO
-        GL_CALL(glBindFramebuffer(GL_FRAMEBUFFER, finalFBO));
-        GL_CALL(glViewport(0, 0, width, height));
+        // Pass 1 → final_fbo
+        GL(glBindFramebuffer(GL_FRAMEBUFFER, final_fbo));
+        GL(glViewport(0, 0, width, height));
+        GL(glDisable(GL_DEPTH_TEST));
+        GL(glUseProgram(m_post_prog));
+        GL(glUniform1i(m_post_loc_texA, 0));
+        GL(glUniform1i(m_post_loc_texB, 1));
+        GL(glActiveTexture(GL_TEXTURE0)); GL(glBindTexture(GL_TEXTURE_2D, m_tex_color[0]));
+        GL(glActiveTexture(GL_TEXTURE1)); GL(glBindTexture(GL_TEXTURE_2D, m_tex_color[1]));
+        glm::mat4 inv = glm::inverse(mvp);
+        GL(glUniformMatrix4fv(m_post_loc_inv_mvp, 1, GL_FALSE, glm::value_ptr(inv)));
+        GL(glBindVertexArray(m_post_vao));
+        GL(glDrawArrays(GL_TRIANGLES, 0, 3));
+        GL(glBindVertexArray(0));
+        GL(glUseProgram(0));
 
-        const GLfloat clearFinal[] = {0.f, 0.f, 0.f, 1.f};
-        GL_CALL(glClearBufferfv(GL_COLOR, 0, clearFinal));
-
-        GL_CALL(glDisable(GL_DEPTH_TEST));
-        GL_CALL(glUseProgram(m_postProg));
-
-        GL_CALL(glUniform1i(m_postLoc_texA, 0));
-        GL_CALL(glUniform1i(m_postLoc_texB, 1));
-
-        GL_CALL(glActiveTexture(GL_TEXTURE0));
-        GL_CALL(glBindTexture(GL_TEXTURE_2D, m_tex_color[0]));
-        GL_CALL(glActiveTexture(GL_TEXTURE1));
-        GL_CALL(glBindTexture(GL_TEXTURE_2D, m_tex_color[1]));
-
-        glm::mat4 invMVP = glm::inverse(mvp);
-        GL_CALL(glUniformMatrix4fv(m_postLoc_uInvMVP, 1, GL_FALSE, glm::value_ptr(invMVP)));
-        GL_CALL(glUniform1f(m_postLoc_uEncFreq, m_enc_freq));
-
-        GL_CALL(glBindVertexArray(m_postVAO));
-        GL_CALL(glDrawArrays(GL_TRIANGLES, 0, 3));
-        GL_CALL(glBindVertexArray(0));
-
-        GL_CALL(glBindTexture(GL_TEXTURE_2D, 0));
-        GL_CALL(glUseProgram(0));
-
-        // Blit to default framebuffer for swap
-        GL_CALL(glBindFramebuffer(GL_READ_FRAMEBUFFER, finalFBO));
-        GL_CALL(glReadBuffer(GL_COLOR_ATTACHMENT0));
-        GL_CALL(glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0));
-        GL_CALL(glBlitFramebuffer(
-            0, 0, width, height,
-            0, 0, width, height,
-            GL_COLOR_BUFFER_BIT,
-            GL_NEAREST
-        ));
-        GL_CALL(glBindFramebuffer(GL_FRAMEBUFFER, 0));
+        // Blit to default FB for swap.
+        GL(glBindFramebuffer(GL_READ_FRAMEBUFFER, final_fbo));
+        GL(glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0));
+        GL(glBlitFramebuffer(0,0,width,height, 0,0,width,height,
+                             GL_COLOR_BUFFER_BIT, GL_NEAREST));
+        GL(glBindFramebuffer(GL_FRAMEBUFFER, 0));
     };
 
-    // ---- warmup (NOT timed) ----
+    // Warmup (not timed).
+    glm::mat4 mvp_buf;
     for (int i = 0; i < warmup_frames; ++i) {
-        m_benchmark_mvp = glm::make_mat4(mvps);
-        render_one(m_benchmark_mvp);
+        mvp_buf = glm::make_mat4(mvps);
+        render_one(mvp_buf);
         glfwSwapBuffers(m_window);
         glfwPollEvents();
     }
 
-    // ---- timed frames ----
+    // Timed frames.
+    constexpr int kRepeat = 100;
+    std::vector<double> times_ms;
+    times_ms.reserve(B);
+
     for (int i = 0; i < B; ++i) {
-        m_benchmark_mvp = glm::make_mat4(mvps + i * 16);
+        mvp_buf = glm::make_mat4(mvps + i * 16);
 
-        constexpr int kRepeat = 100;
-
-        GL_CALL(glFinish());
+        GL(glFinish());
         double t0 = glfwGetTime();
-
-        for (int r = 0; r < kRepeat; ++r) {
-            render_one(m_benchmark_mvp);
-        }
-
-        GL_CALL(glFinish());
+        for (int r = 0; r < kRepeat; ++r)
+            render_one(mvp_buf);
+        GL(glFinish());
         double t1 = glfwGetTime();
 
         glfwSwapBuffers(m_window);
         glfwPollEvents();
+        times_ms.push_back((t1 - t0) * 1000.0 / kRepeat);
 
-        double ms = ((t1 - t0) * 1000.0) / double(kRepeat);
-        times_ms.push_back(ms);
-
-        // ---- screenshot ----
-        if (save_every > 0 && (i % save_every == 0) && !out_dir.empty()) {
-            std::vector<unsigned char> pixels(4 * width * height);
-            std::vector<unsigned char> flipped(4 * width * height);
-
-            GL_CALL(glBindFramebuffer(GL_FRAMEBUFFER, finalFBO));
-            GL_CALL(glReadBuffer(GL_COLOR_ATTACHMENT0));
-            GL_CALL(glPixelStorei(GL_PACK_ALIGNMENT, 1));
-            GL_CALL(glReadPixels(
-                0, 0, width, height,
-                GL_RGBA, GL_UNSIGNED_BYTE,
-                pixels.data()));
-            GL_CALL(glBindFramebuffer(GL_FRAMEBUFFER, 0));
-
-            for (int row = 0; row < height; ++row) {
-                std::memcpy(
-                    &flipped[row * width * 4],
-                    &pixels[(height - 1 - row) * width * 4],
-                    (size_t)width * 4
-                );
-            }
-
+        // Optional screenshot.
+        if (save_every > 0 && (i % save_every == 0) && !m_output_dir.empty()) {
+            std::vector<unsigned char> px(4*width*height), flipped(4*width*height);
+            GL(glBindFramebuffer(GL_FRAMEBUFFER, final_fbo));
+            GL(glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, px.data()));
+            GL(glBindFramebuffer(GL_FRAMEBUFFER, 0));
+            for (int row = 0; row < height; ++row)
+                std::memcpy(&flipped[row*width*4],
+                            &px[(height-1-row)*width*4], size_t(width)*4);
             char path[512];
-            std::snprintf(
-                path, sizeof(path),
-                "%sscreenshots/benchmark_%05d.ppm",
-                out_dir.c_str(), i
-            );
+            std::snprintf(path, sizeof(path), "%sscreenshots/benchmark_%05d.ppm",
+                          m_output_dir.c_str(), i);
             write_ppm(path, width, height, flipped.data());
         }
     }
 
-    m_benchmark_mode = false;
-
-    // ------------------------------------------------------------
-    // Write logs
-    // ------------------------------------------------------------
-    if (!out_dir.empty()) {
-        // Per-frame log
+    // Write logs.
+    if (!m_output_dir.empty()) {
         {
-            std::ofstream f(out_dir + "benchmark_frames.txt");
+            std::ofstream f(m_output_dir + "benchmark_frames.txt");
             for (size_t i = 0; i < times_ms.size(); ++i)
-                f << i << " " << times_ms[i] << "\n";
+                f << i << ' ' << times_ms[i] << '\n';
         }
-
-        // Summary log
-        double sum = 0.0;
-        double mn = times_ms[0], mx = times_ms[0];
-        for (double t : times_ms) {
-            sum += t;
-            mn = std::min(mn, t);
-            mx = std::max(mx, t);
-        }
-        double mean_ms = sum / times_ms.size();
-        double fps = 1000.0 / mean_ms;
-
-        std::ofstream f(out_dir + "benchmark_summary.txt");
-        f << "frames: " << B << "\n";
-        f << "mean_ms: " << mean_ms << "\n";
-        f << "min_ms:  " << mn << "\n";
-        f << "max_ms:  " << mx << "\n";
-        f << "fps:     " << fps << "\n";
+        double sum = 0, mn = times_ms[0], mx = times_ms[0];
+        for (double t : times_ms) { sum += t; mn = std::min(mn,t); mx = std::max(mx,t); }
+        double mean = sum / double(times_ms.size());
+        std::ofstream f(m_output_dir + "benchmark_summary.txt");
+        f << "frames: " << B << '\n'
+          << "mean_ms: " << mean << '\n'
+          << "min_ms:  " << mn << '\n'
+          << "max_ms:  " << mx << '\n'
+          << "fps:     " << 1000.0 / mean << '\n';
     }
 
-    // Cleanup
-    if (finalTex) GL_CALL(glDeleteTextures(1, &finalTex));
-    if (finalFBO) GL_CALL(glDeleteFramebuffers(1, &finalFBO));
-
+    GL(glDeleteTextures(1, &final_tex));
+    GL(glDeleteFramebuffers(1, &final_fbo));
     glfwDestroyWindow(m_window);
     glfwTerminate();
     m_window = nullptr;
 }
 
-} // namespace viewer
-
-// ---- global callbacks ----
-void glfw_mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {
-    GET_VIEWER(window)->_mouse_button_callback(window, button, action, mods);
-}
-void glfw_cursor_pos_callback(GLFWwindow* window, double x, double y) {
-    GET_VIEWER(window)->_cursor_pos_callback(window, x, y);
-}
-void glfw_scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
-    GET_VIEWER(window)->_scroll_callback(window, xoffset, yoffset);
-}
-void glfw_window_size_callback(GLFWwindow* window, int width, int height) {
-    GET_VIEWER(window)->_window_size_callback(window, width, height);
-}
+}  // namespace viewer

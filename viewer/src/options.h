@@ -1,13 +1,12 @@
-#pragma once
+// options.h — Runtime rendering options.
 
-#include <cstdint>
+#pragma once
 
 namespace viewer {
 
-class Options {
-public:
-    bool render_geometry = true;
-    float background_brightness = 0.0f;
+struct Options {
+    bool  render_geometry       = true;
+    float background_brightness = 0.f;
 };
 
-} // namespace viewer
+}  // namespace viewer

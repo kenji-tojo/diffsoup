@@ -1,70 +1,76 @@
-/*
- * This code is adapted from https://github.com/sxyu/volrend/blob/master/include/volrend/camera.hpp
- */
+// camera.h — Orbit camera with standard game-engine-style controls.
 
 #pragma once
 
-#include <array>
-#include <memory>
-#include "glm/mat4x3.hpp"
-#include "glm/mat4x4.hpp"
-#include "glm/vec3.hpp"
-#include "glm/vec2.hpp"
+#include <glm/mat4x4.hpp>
+#include <glm/vec3.hpp>
 
 namespace viewer {
 
-struct Camera {
+/// A simple orbit camera that rotates around a target point.
+///
+/// Controls:
+///   Left-drag   → orbit  (rotate yaw / pitch)
+///   Right-drag  → pan    (shift target in screen plane)
+///   Scroll      → dolly  (change distance to target)
+class OrbitCamera {
 public:
-    static constexpr float CAMERA_DEFAULT_FOCAL_LENGTH = 1111.11f;
+    explicit OrbitCamera(int width = 800, int height = 800);
 
-    explicit Camera(int width = 0, int height = 0,
-           float fx = CAMERA_DEFAULT_FOCAL_LENGTH, float fy = -1.f);
-    ~Camera();
+    // ---- Interaction -------------------------------------------------------
 
-    /** Drag helpers **/
-    void begin_drag(float x, float y, bool is_pan, bool about_origin);
+    /// Call on mouse-button press.  `pan` = true for right-drag panning.
+    void begin_drag(float x, float y, bool pan);
+
+    /// Call every cursor-move while dragging.
     void drag_update(float x, float y);
+
+    /// Call on mouse-button release.
     void end_drag();
-    bool is_dragging() const;
-    /** Move center by +=xyz, correctly handling drag **/
-    void move(const glm::vec3& xyz);
 
-    /** Camera params **/
-    // Camera pose model, you can modify these
-    glm::vec3 v_back, v_world_up, center;
+    /// Dolly in / out by the signed scroll amount.
+    void scroll(float delta);
 
-    // Origin for about-origin rotation
-    glm::vec3 origin;
+    // ---- Matrices ----------------------------------------------------------
 
-    // Vectors below are automatically updated
-    glm::vec3 v_up, v_right;
+    /// Recalculates view and projection matrices from current parameters.
+    void update();
 
-    // 4x3 C2W transform used for volume rendering, automatically updated
-    glm::mat4x3 transform;
+    /// The combined projection × view matrix (ready for uniforms).
+    const glm::mat4& mvp()  const { return m_mvp; }
+    const glm::mat4& view() const { return m_view; }
+    const glm::mat4& proj() const { return m_proj; }
 
-    // 4x4 projection matrix for triangle rendering
-    glm::mat4x4 K;
+    // ---- Tunable state (public for GUI sliders etc.) -----------------------
 
-    // 4x4 W2C transform
-    glm::mat4x4 w2c;
+    glm::vec3 target{0.f};   ///< World-space orbit center
+    float distance  = 5.f;   ///< Distance from target
+    float yaw       = 0.f;   ///< Horizontal angle (radians)
+    float pitch     = 0.f;   ///< Vertical angle (radians), clamped to ±89°
+    float fov_y_deg = 40.f;  ///< Vertical field of view (degrees)
+    float near_clip = 0.01f;
+    float far_clip  = 100.f;
 
-    // Image size
     int width, height;
 
-    // Focal length
-    float fx, fy;
-
-    // GUI movement speed
-    float movement_speed = 1.f;
-
-    // Update the transform after modifying v_right/v_forward/center
-    // (internal)
-    void _update(bool transform_from_vecs = true);
-
 private:
-    // For dragging
-    struct DragState;
-    std::unique_ptr<DragState> drag_state_;
+    glm::mat4 m_view{1.f};
+    glm::mat4 m_proj{1.f};
+    glm::mat4 m_mvp{1.f};
+
+    // Drag bookkeeping
+    bool  m_dragging   = false;
+    bool  m_panning    = false;
+    float m_drag_x     = 0.f;
+    float m_drag_y     = 0.f;
+    float m_drag_yaw   = 0.f;
+    float m_drag_pitch = 0.f;
+    glm::vec3 m_drag_target{0.f};
+
+    // Sensitivity
+    static constexpr float kOrbitSpeed = 0.005f;
+    static constexpr float kPanSpeed   = 0.003f;
+    static constexpr float kScrollStep = 0.1f;
 };
 
 }  // namespace viewer
