@@ -1,0 +1,16 @@
+[build-system]
+requires = [
+    "scikit-build-core>=0.11.6",
+    "nanobind>=2.11.0",
+    "glad2>=2.0.0",
+]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "diffsoupviewer"
+version = "0.1.0"
+requires-python = ">=3.10"
+
+[tool.scikit-build]
+build.verbose = true
+wheel.packages = ["python/diffsoupviewer"]
