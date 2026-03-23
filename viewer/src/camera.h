@@ -8,6 +8,7 @@
 namespace viewer {
 
 /// A simple orbit camera that rotates around a target point.
+/// Uses -Z up convention (NeRF-synthetic / Blender meshes).
 ///
 /// Controls:
 ///   Left-drag   → orbit  (rotate yaw / pitch)
@@ -46,7 +47,7 @@ public:
     glm::vec3 target{0.f};   ///< World-space orbit center
     float distance  = 5.f;   ///< Distance from target
     float yaw       = 0.f;   ///< Horizontal angle (radians)
-    float pitch     = 0.f;   ///< Vertical angle (radians), clamped to ±89°
+    float pitch     = -0.35f; ///< Vertical angle (radians), clamped to ±89°; <0 = looking down
     float fov_y_deg = 40.f;  ///< Vertical field of view (degrees)
     float near_clip = 0.01f;
     float far_clip  = 100.f;

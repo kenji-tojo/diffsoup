@@ -117,7 +117,7 @@ static GLFWwindow* create_window(int w, int h, const char* title) {
     // ImGui
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
-    ImGui_ImplGlfw_InitForOpenGL(win, true);
+    ImGui_ImplGlfw_InitForOpenGL(win, false);
     ImGui_ImplOpenGL3_Init("#version 330");
     ImGui::StyleColorsDark();
     ImGui::GetIO().IniFilename = nullptr;
@@ -755,7 +755,8 @@ void Viewer::draw_gui() {
 // Input callbacks
 // ---------------------------------------------------------------------------
 
-void Viewer::on_mouse_button(GLFWwindow* /*win*/, int button, int action, int mods) {
+void Viewer::on_mouse_button(GLFWwindow* win, int button, int action, int mods) {
+    ImGui_ImplGlfw_MouseButtonCallback(win, button, action, mods);
     if (ImGui::GetIO().WantCaptureMouse) return;
 
     if (action == GLFW_PRESS) {
@@ -770,11 +771,14 @@ void Viewer::on_mouse_button(GLFWwindow* /*win*/, int button, int action, int mo
     }
 }
 
-void Viewer::on_cursor_pos(GLFWwindow* /*win*/, double x, double y) {
+void Viewer::on_cursor_pos(GLFWwindow* win, double x, double y) {
+    ImGui_ImplGlfw_CursorPosCallback(win, x, y);
+    if (ImGui::GetIO().WantCaptureMouse) return;
     m_camera->drag_update(float(x), float(y));
 }
 
-void Viewer::on_scroll(GLFWwindow* /*win*/, double /*xoff*/, double yoff) {
+void Viewer::on_scroll(GLFWwindow* win, double xoff, double yoff) {
+    ImGui_ImplGlfw_ScrollCallback(win, xoff, yoff);
     if (ImGui::GetIO().WantCaptureMouse) return;
     m_camera->scroll(float(yoff));
 }

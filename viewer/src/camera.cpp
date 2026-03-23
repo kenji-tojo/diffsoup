@@ -38,7 +38,7 @@ void OrbitCamera::drag_update(float x, float y) {
         target = m_drag_target - right * dx * speed + up * dy * speed;
     } else {
         // Orbit.
-        yaw   = m_drag_yaw   - dx * kOrbitSpeed;
+        yaw   = m_drag_yaw   + dx * kOrbitSpeed;
         pitch = m_drag_pitch - dy * kOrbitSpeed;
 
         // Clamp pitch to avoid gimbal flip.
@@ -60,14 +60,30 @@ void OrbitCamera::scroll(float delta) {
 }
 
 void OrbitCamera::update() {
-    // Eye position on a sphere around `target`.
+    // Model convention: -Z is up.
+    // pitch > 0 → eye moves in -Z direction (above the model).
+    const float cp = std::cos(pitch), sp = std::sin(pitch);
+    const float cy = std::cos(yaw),   sy = std::sin(yaw);
+
     const glm::vec3 eye{
-        target.x + distance * std::cos(pitch) * std::sin(yaw),
-        target.y + distance * std::sin(pitch),
-        target.z + distance * std::cos(pitch) * std::cos(yaw),
+        target.x + distance * cp * cy,
+        target.y + distance * cp * sy,
+        target.z - distance * sp,
     };
 
-    m_view = glm::lookAt(eye, target, glm::vec3(0.f, 1.f, 0.f));
+    // Build view matrix manually (avoids lookAt handedness flip with -Z up).
+    const glm::vec3 world_up{0.f, 0.f, -1.f};
+    glm::vec3 fwd   = glm::normalize(target - eye);
+    glm::vec3 right = glm::normalize(glm::cross(fwd, world_up));
+    glm::vec3 up    = glm::cross(right, fwd);
+
+    m_view = glm::mat4(1.f);
+    m_view[0][0] =  right.x; m_view[1][0] =  right.y; m_view[2][0] =  right.z;
+    m_view[0][1] =  up.x;    m_view[1][1] =  up.y;    m_view[2][1] =  up.z;
+    m_view[0][2] = -fwd.x;   m_view[1][2] = -fwd.y;   m_view[2][2] = -fwd.z;
+    m_view[3][0] = -glm::dot(right, eye);
+    m_view[3][1] = -glm::dot(up, eye);
+    m_view[3][2] =  glm::dot(fwd, eye);
 
     const float aspect = (height > 0) ? float(width) / float(height) : 1.f;
     m_proj = glm::perspective(glm::radians(fov_y_deg), aspect, near_clip, far_clip);
