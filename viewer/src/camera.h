@@ -33,12 +33,12 @@ public:
 
     glm::vec3 target{0.f};
     glm::vec3 world_up;       ///< Unit vector pointing "up" in world space.
-    float distance  = 5.f;
+    float distance  = 6.f;
     float yaw       = 0.f;
-    float pitch     = -0.35f;
+    float pitch     = 0.35f;
     float fov_y_deg = 40.f;
-    float near_clip = 2.0f;
-    float far_clip  = 100.0f;
+    float near_clip = 4.0f;
+    float far_clip  = 100.f;
 
     int width, height;
 
