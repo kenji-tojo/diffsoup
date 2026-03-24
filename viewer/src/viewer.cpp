@@ -253,7 +253,7 @@ out vec2 vUV;
 void main() {
     gl_Position = vec4(verts[gl_VertexID], 0.0, 1.0);
     vec2 uv = 0.5 * (gl_Position.xy + 1.0);
-    vUV = vec2(uv.x, 1.0 - uv.y);
+    vUV = uv;
 }
 )";
 
@@ -278,7 +278,9 @@ float sigmoid(float x) { return 1.0 / (1.0 + exp(-x)); }
 
 vec3 ndc_to_world(vec4 ndc) {
     vec4 clip = uInvMVP * ndc;
-    return clip.xyz / max(abs(clip.w), 1e-20);
+    float w = clip.w;
+    if (abs(w) < 1e-20) w = 1e-20;
+    return clip.xyz / w;
 }
 
 // Spherical-harmonics basis up to degree 2 (9 coefficients).
@@ -326,23 +328,23 @@ void main() {
     vec4 x2 = vec4(sh[1], sh[2], sh[3], sh[4]);
     vec4 x3 = vec4(sh[5], sh[6], sh[7], sh[8]);
 
-    // Layer 1: 16→16, ReLU
+    // Layer 1: 16->16, ReLU
     vec4 y0 = relu4(W1[ 0]*x0 + W1[ 1]*x1 + W1[ 2]*x2 + W1[ 3]*x3 + B1[0]);
     vec4 y1 = relu4(W1[ 4]*x0 + W1[ 5]*x1 + W1[ 6]*x2 + W1[ 7]*x3 + B1[1]);
     vec4 y2 = relu4(W1[ 8]*x0 + W1[ 9]*x1 + W1[10]*x2 + W1[11]*x3 + B1[2]);
     vec4 y3 = relu4(W1[12]*x0 + W1[13]*x1 + W1[14]*x2 + W1[15]*x3 + B1[3]);
 
-    // Layer 2: 16→16, ReLU
+    // Layer 2: 16->16, ReLU
     vec4 z0 = relu4(W2[ 0]*y0 + W2[ 1]*y1 + W2[ 2]*y2 + W2[ 3]*y3 + B2[0]);
     vec4 z1 = relu4(W2[ 4]*y0 + W2[ 5]*y1 + W2[ 6]*y2 + W2[ 7]*y3 + B2[1]);
     vec4 z2 = relu4(W2[ 8]*y0 + W2[ 9]*y1 + W2[10]*y2 + W2[11]*y3 + B2[2]);
     vec4 z3 = relu4(W2[12]*y0 + W2[13]*y1 + W2[14]*y2 + W2[15]*y3 + B2[3]);
 
-    // Layer 3: 16→3, sigmoid
+    // Layer 3: 16->3, sigmoid
     vec4 acc = W3[0]*z0 + W3[1]*z1 + W3[2]*z2 + W3[3]*z3 + B3;
     vec3 mlp = vec3(sigmoid(acc.x), sigmoid(acc.y), sigmoid(acc.z));
 
-    // Residual blend: (1−α)·albedo + α·mlp, where α = A.a.
+    // Residual blend: (1-a)*albedo + a*mlp, where a = A.a.
     FragColor = vec4(mix(A.rgb, mlp, A.a), 1.0);
 }
 )";
@@ -441,6 +443,11 @@ void Viewer::set_mlp_weights(const float* W1, const float* b1,
 
 void Viewer::set_camera_target(const float target[3]) {
     m_camera->target = glm::vec3(target[0], target[1], target[2]);
+    m_camera->update();
+}
+
+void Viewer::set_up_axis(UpAxis axis) {
+    m_camera->up_axis = axis;
     m_camera->update();
 }
 
@@ -600,7 +607,6 @@ void Viewer::upload_pending_mlp() {
     if (!m_b2.empty()) { float b[16]={}; std::copy_n(m_b2.data(), 16, b); upload_buf(m_ubo_B2, b, sizeof(b)); }
 
     if (!m_W3.empty()) {
-        // W3 is 3×16 → 1 block-row of 4 mat4s, only first 3 rows used.
         float t3[4*16] = {};
         for (int tc = 0; tc < 4; ++tc)
             for (int c = 0; c < 4; ++c)
@@ -729,12 +735,31 @@ void Viewer::draw_gui() {
     ImGui::NewFrame();
 
     ImGui::SetNextWindowPos(ImVec2(20, 20), ImGuiCond_Once);
-    ImGui::SetNextWindowSize(ImVec2(280, 200), ImGuiCond_Once);
+    ImGui::SetNextWindowSize(ImVec2(280, 260), ImGuiCond_Once);
     ImGui::Begin("Settings");
 
     ImGui::Text("Resolution: %dx%d", m_camera->width, m_camera->height);
     ImGui::Text("Faces: %d", m_face_count);
     ImGui::SliderFloat("Background", &m_options.background_brightness, 0.f, 1.f);
+
+    // Up-axis selector
+    {
+        static const UpAxis axes[] = {
+            UpAxis::POS_Y, UpAxis::NEG_Y, UpAxis::POS_Z, UpAxis::NEG_Z
+        };
+        int current = 0;
+        for (int i = 0; i < 4; ++i)
+            if (axes[i] == m_camera->up_axis) { current = i; break; }
+
+        const char* labels[] = { "+Y", "-Y (COLMAP/MipNeRF-360)", "+Z (NeRF-synthetic)", "-Z" };
+        if (ImGui::Combo("Up axis", &current, labels, 4)) {
+            m_camera->up_axis = axes[current];
+            m_camera->update();
+        }
+    }
+
+    ImGui::SliderFloat("FOV", &m_camera->fov_y_deg, 10.f, 120.f);
+    ImGui::SliderFloat("Distance", &m_camera->distance, 0.01f, 50.f, "%.2f", ImGuiSliderFlags_Logarithmic);
 
     if (!m_output_dir.empty() && ImGui::Button("Save screenshot")) {
         int w = m_camera->width, h = m_camera->height;
@@ -854,9 +879,7 @@ void Viewer::launch_benchmark(int width, int height,
     }
     GL(glBindFramebuffer(GL_FRAMEBUFFER, 0));
 
-    // Helper: render one frame, then blit to final_fbo.
     auto render_one = [&](const glm::mat4& mvp) {
-        // Pass 0 → m_fbo
         GL(glBindFramebuffer(GL_FRAMEBUFFER, m_fbo));
         GL(glViewport(0, 0, width, height));
 
@@ -884,7 +907,6 @@ void Viewer::launch_benchmark(int width, int height,
             GL(glUseProgram(0));
         }
 
-        // Pass 1 → final_fbo
         GL(glBindFramebuffer(GL_FRAMEBUFFER, final_fbo));
         GL(glViewport(0, 0, width, height));
         GL(glDisable(GL_DEPTH_TEST));
@@ -900,7 +922,6 @@ void Viewer::launch_benchmark(int width, int height,
         GL(glBindVertexArray(0));
         GL(glUseProgram(0));
 
-        // Blit to default FB for swap.
         GL(glBindFramebuffer(GL_READ_FRAMEBUFFER, final_fbo));
         GL(glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0));
         GL(glBlitFramebuffer(0,0,width,height, 0,0,width,height,
@@ -908,7 +929,6 @@ void Viewer::launch_benchmark(int width, int height,
         GL(glBindFramebuffer(GL_FRAMEBUFFER, 0));
     };
 
-    // Warmup (not timed).
     glm::mat4 mvp_buf;
     for (int i = 0; i < warmup_frames; ++i) {
         mvp_buf = glm::make_mat4(mvps);
@@ -917,7 +937,6 @@ void Viewer::launch_benchmark(int width, int height,
         glfwPollEvents();
     }
 
-    // Timed frames.
     constexpr int kRepeat = 100;
     std::vector<double> times_ms;
     times_ms.reserve(B);
@@ -936,7 +955,6 @@ void Viewer::launch_benchmark(int width, int height,
         glfwPollEvents();
         times_ms.push_back((t1 - t0) * 1000.0 / kRepeat);
 
-        // Optional screenshot.
         if (save_every > 0 && (i % save_every == 0) && !m_output_dir.empty()) {
             std::vector<unsigned char> px(4*width*height), flipped(4*width*height);
             GL(glBindFramebuffer(GL_FRAMEBUFFER, final_fbo));
@@ -952,7 +970,6 @@ void Viewer::launch_benchmark(int width, int height,
         }
     }
 
-    // Write logs.
     if (!m_output_dir.empty()) {
         {
             std::ofstream f(m_output_dir + "benchmark_frames.txt");

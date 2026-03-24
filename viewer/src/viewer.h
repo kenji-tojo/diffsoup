@@ -1,4 +1,8 @@
 // viewer.h — OpenGL mesh viewer with per-triangle LUT + MLP compositing.
+//
+// options.h and triangles.h are merged here.  The Triangles helper class was
+// unused by the viewer — mesh data is managed directly.  Options is a small
+// POD struct that lives more naturally alongside the Viewer.
 
 #pragma once
 
@@ -11,9 +15,17 @@
 #include <GLFW/glfw3.h>
 
 #include "camera.h"
-#include "options.h"
 
 namespace viewer {
+
+// ---- Rendering options (was options.h) ------------------------------------
+
+struct Options {
+    bool  render_geometry       = true;
+    float background_brightness = 0.f;
+};
+
+// ---- Viewer ---------------------------------------------------------------
 
 class Viewer {
 public:
@@ -48,6 +60,9 @@ public:
 
     /// Set the orbit-camera target to the mesh centroid (or any point).
     void set_camera_target(const float target[3]);
+
+    /// Set the world up-axis for the orbit camera.
+    void set_up_axis(UpAxis axis);
 
     // ---- GLFW callbacks (forwarded from free functions) ---------------------
 

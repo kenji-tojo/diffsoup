@@ -3,6 +3,8 @@
 #
 # Usage:
 #   python examples/04_view_results.py --ckpt results/02_synthetic/lego/final_params.pt
+#   python examples/04_view_results.py --ckpt results/01_mip360/kitchen/final_params.pt
+#   python examples/04_view_results.py --ckpt results/02_synthetic/lego/final_params.pt --up_axis pos_y
 #
 # Dependencies:
 #   pip install diffsoupviewer numpy torch
@@ -83,7 +85,6 @@ def extract_mlp_weights(state_dict: dict):
     Works regardless of key naming convention — we simply collect
     (weight, bias) pairs in parameter order and match by shape.
     """
-    # Collect all weight and bias tensors in insertion order.
     weights, biases = [], []
     keys = list(state_dict.keys())
     for k in keys:
@@ -109,6 +110,24 @@ def extract_mlp_weights(state_dict: dict):
     return W1, b1, W2, b2, W3, b3
 
 
+def detect_up_axis(ckpt: dict) -> str:
+    """Infer the world up-axis from checkpoint metadata.
+
+    Detection logic:
+      1. Explicit 'up_axis' key in checkpoint  → use it directly.
+      2. 'flip_z' key present (01_mip360.py)   → COLMAP scene, up = "-y".
+      3. Otherwise (02_synthetic.py)            → NeRF-synthetic, up = "+z".
+    """
+    if "up_axis" in ckpt:
+        return str(ckpt["up_axis"])
+    if "flip_z" in ckpt:
+        return "-y"
+    # NeRF-synthetic / Blender: the OBJ loader swizzles vertices as
+    # [x, -z, y], and the MVP is built from the original transforms.
+    # Empirically, +Z up gives the correct orientation in the viewer.
+    return "+z"
+
+
 # ── Main ─────────────────────────────────────────────────────────────
 
 
@@ -123,6 +142,12 @@ def main():
     parser.add_argument(
         "--output_dir", type=str, default=None,
         help="Directory for viewer screenshots (default: same as checkpoint)",
+    )
+    parser.add_argument(
+        "--up_axis", type=str, default=None,
+        help="World up direction for the orbit camera. "
+             "One of: pos_y, neg_y, pos_z, neg_z, +y, -y, +z, -z. "
+             "Auto-detected from checkpoint if omitted.",
     )
     args = parser.parse_args()
 
@@ -151,6 +176,11 @@ def main():
     print(f"[level] Rmax={Rmax}  texels/face={level_size(Rmax)}")
     print(f"[feat]  dim={feat_dim}  feat_acc={feat_acc.shape}  alpha_acc={alpha_acc.shape}")
 
+    # ── Detect or override up-axis ───────────────────────────────────
+
+    up_axis = args.up_axis if args.up_axis else detect_up_axis(ckpt)
+    print(f"[cam]   up_axis={up_axis}")
+
     # ── Build face-colour LUT ────────────────────────────────────────
 
     face_color_lut = pack_face_color_lut(feat_acc, alpha_acc, num_faces, Rmax)
@@ -178,6 +208,7 @@ def main():
         W2=W2, b2=b2,
         W3=W3, b3=b3,
         output_dir=output_dir,
+        up_axis=up_axis,
     )
 
 

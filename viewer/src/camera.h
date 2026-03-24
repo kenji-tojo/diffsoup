@@ -1,4 +1,4 @@
-// camera.h — Orbit camera with standard game-engine-style controls.
+// camera.h — Orbit camera with configurable up-axis.
 
 #pragma once
 
@@ -7,8 +7,14 @@
 
 namespace viewer {
 
+/// World-space up direction.  Choose based on your dataset convention:
+///   POS_Z  — NeRF-synthetic (Blender-exported, after OBJ swizzle)
+///   NEG_Y  — COLMAP / MipNeRF-360 scenes
+///   POS_Y  — some OpenGL / game-engine data
+///   NEG_Z  — rare, but supported
+enum class UpAxis { POS_Y, NEG_Y, POS_Z, NEG_Z };
+
 /// A simple orbit camera that rotates around a target point.
-/// Uses -Z up convention (NeRF-synthetic / Blender meshes).
 ///
 /// Controls:
 ///   Left-drag   → orbit  (rotate yaw / pitch)
@@ -16,41 +22,37 @@ namespace viewer {
 ///   Scroll      → dolly  (change distance to target)
 class OrbitCamera {
 public:
-    explicit OrbitCamera(int width = 800, int height = 800);
+    explicit OrbitCamera(int width = 800, int height = 800,
+                         UpAxis up = UpAxis::NEG_Y);
 
     // ---- Interaction -------------------------------------------------------
 
-    /// Call on mouse-button press.  `pan` = true for right-drag panning.
     void begin_drag(float x, float y, bool pan);
-
-    /// Call every cursor-move while dragging.
     void drag_update(float x, float y);
-
-    /// Call on mouse-button release.
     void end_drag();
-
-    /// Dolly in / out by the signed scroll amount.
     void scroll(float delta);
 
     // ---- Matrices ----------------------------------------------------------
 
-    /// Recalculates view and projection matrices from current parameters.
     void update();
 
-    /// The combined projection × view matrix (ready for uniforms).
     const glm::mat4& mvp()  const { return m_mvp; }
     const glm::mat4& view() const { return m_view; }
     const glm::mat4& proj() const { return m_proj; }
 
-    // ---- Tunable state (public for GUI sliders etc.) -----------------------
+    /// World-space eye position (recomputed on update()).
+    const glm::vec3& eye() const { return m_eye; }
 
-    glm::vec3 target{0.f};   ///< World-space orbit center
-    float distance  = 5.f;   ///< Distance from target
-    float yaw       = 0.f;   ///< Horizontal angle (radians)
-    float pitch     = -0.35f; ///< Vertical angle (radians), clamped to ±89°; <0 = looking down
-    float fov_y_deg = 40.f;  ///< Vertical field of view (degrees)
+    // ---- Tunable state (public for GUI sliders) ----------------------------
+
+    glm::vec3 target{0.f};
+    float distance  = 5.f;
+    float yaw       = 0.f;       ///< Horizontal angle (radians)
+    float pitch     = -0.35f;    ///< Vertical angle (radians); >0 = above target
+    float fov_y_deg = 40.f;
     float near_clip = 0.01f;
     float far_clip  = 100.f;
+    UpAxis up_axis;
 
     int width, height;
 
@@ -58,6 +60,7 @@ private:
     glm::mat4 m_view{1.f};
     glm::mat4 m_proj{1.f};
     glm::mat4 m_mvp{1.f};
+    glm::vec3 m_eye{0.f};
 
     // Drag bookkeeping
     bool  m_dragging   = false;
@@ -68,10 +71,16 @@ private:
     float m_drag_pitch = 0.f;
     glm::vec3 m_drag_target{0.f};
 
-    // Sensitivity
     static constexpr float kOrbitSpeed = 0.005f;
     static constexpr float kPanSpeed   = 0.003f;
     static constexpr float kScrollStep = 0.1f;
 };
+
+/// Parse a string like "pos_y", "neg_z", "+Y", "-Z", "y", "z" into UpAxis.
+/// Returns false if the string is not recognised.
+bool parse_up_axis(const char* str, UpAxis& out);
+
+/// Human-readable label (e.g. "+Y", "−Z").
+const char* up_axis_label(UpAxis a);
 
 }  // namespace viewer

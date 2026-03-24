@@ -26,7 +26,8 @@ NB_MODULE(_core, m) {
         nb::ndarray<float, nb::numpy, nb::shape<16>,    nb::c_contig> b2,
         nb::ndarray<float, nb::numpy, nb::shape<3,16>,  nb::c_contig> W3,
         nb::ndarray<float, nb::numpy, nb::shape<3>,     nb::c_contig> b3,
-        const char* output_dir
+        const char* output_dir,
+        const char* up_axis_str
     ) {
         const int V = int(verts.shape(0));
         const int F = int(faces.shape(0));
@@ -35,6 +36,13 @@ NB_MODULE(_core, m) {
 
         if (int(lut1.shape(0)) != H || int(lut1.shape(1)) != W)
             throw std::runtime_error("LUT0 and LUT1 sizes must match");
+
+        // Parse up-axis string.
+        viewer::UpAxis up = viewer::UpAxis::NEG_Z;
+        if (!viewer::parse_up_axis(up_axis_str, up))
+            throw std::runtime_error(
+                std::string("Unknown up_axis: '") + up_axis_str +
+                "'. Expected one of: pos_y, neg_y, pos_z, neg_z, +y, -y, +z, -z");
 
         // Compute mesh centroid for the camera target.
         float cen[3]{};
@@ -49,6 +57,7 @@ NB_MODULE(_core, m) {
         app.set_mesh(V, verts.data(), F, faces.data());
         app.set_triangle_color_lut(0, W, H, lut0.data());
         app.set_triangle_color_lut(1, W, H, lut1.data());
+        app.set_up_axis(up);
         app.set_camera_target(cen);
         app.set_mlp_weights(W1.data(), b1.data(),
                             W2.data(), b2.data(),
@@ -70,7 +79,8 @@ NB_MODULE(_core, m) {
         nb::ndarray<float, nb::numpy, nb::shape<3>,     nb::c_contig> b3,
         nb::ndarray<float, nb::numpy, nb::shape<-1, 4, 4>, nb::c_contig> mvps,
         int width, int height, int warmup_frames, int save_every,
-        const char* output_dir
+        const char* output_dir,
+        const char* up_axis_str
     ) {
         const int V = int(verts.shape(0));
         const int F = int(faces.shape(0));
@@ -80,6 +90,12 @@ NB_MODULE(_core, m) {
 
         if (int(lut1.shape(0)) != H || int(lut1.shape(1)) != W)
             throw std::runtime_error("LUT0 and LUT1 sizes must match");
+
+        viewer::UpAxis up = viewer::UpAxis::NEG_Z;
+        if (!viewer::parse_up_axis(up_axis_str, up))
+            throw std::runtime_error(
+                std::string("Unknown up_axis: '") + up_axis_str +
+                "'. Expected one of: pos_y, neg_y, pos_z, neg_z, +y, -y, +z, -z");
 
         float cen[3]{};
         const float inv_V = 1.f / float(V);
@@ -94,6 +110,7 @@ NB_MODULE(_core, m) {
         app.set_mesh(V, verts.data(), F, faces.data());
         app.set_triangle_color_lut(0, W, H, lut0.data());
         app.set_triangle_color_lut(1, W, H, lut1.data());
+        app.set_up_axis(up);
         app.set_camera_target(cen);
         app.set_mlp_weights(W1.data(), b1.data(),
                             W2.data(), b2.data(),
