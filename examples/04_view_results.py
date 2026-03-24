@@ -4,7 +4,7 @@
 # Usage:
 #   python examples/04_view_results.py --ckpt results/02_synthetic/lego/final_params.pt
 #   python examples/04_view_results.py --ckpt results/01_mip360/kitchen/final_params.pt
-#   python examples/04_view_results.py --ckpt results/02_synthetic/lego/final_params.pt --up_axis pos_y
+#   python examples/04_view_results.py --ckpt ... --up 0 1 0
 #
 # Dependencies:
 #   pip install diffsoupviewer numpy torch
@@ -15,6 +15,7 @@ import argparse
 import math
 import os
 from pathlib import Path
+from typing import Tuple
 
 import numpy as np
 import torch
@@ -26,7 +27,7 @@ import diffsoupviewer
 
 
 def level_size(L: int) -> int:
-    """Number of texels per face at subdivision level L (matches the GLSL shader)."""
+    """Number of texels per face at subdivision level L."""
     if L == 0:
         return 3
     a = (1 << (L - 1)) + 1
@@ -40,38 +41,20 @@ def pack_face_color_lut(
     num_faces: int,
     level: int,
 ) -> np.ndarray:
-    """Pack per-texel features + alpha into the [H, W, 8] float32 LUT
-    expected by :func:`diffsoupviewer.launch_viewer`.
-
-    Args:
-        feat_acc:  float32 [F, S, feat_dim] or [F*S, feat_dim]  (sigmoid'd)
-        alpha_acc: float32 [F, S, 1] or [F*S, 1]                (sigmoid'd)
-        num_faces: number of triangles F
-        level:     finest subdivision level (Rmax)
-
-    Returns:
-        float32 [tex_H, tex_W, 8]
-    """
+    """Pack per-texel features + alpha into [H, W, 8] float32 LUT."""
     S = level_size(level)
     N = num_faces * S
 
-    # Flatten [F, S, dim] → [F*S, dim] if needed.
     if feat_acc.ndim == 3:
         feat_acc = feat_acc.reshape(-1, feat_acc.shape[-1])
     if alpha_acc.ndim == 3:
         alpha_acc = alpha_acc.reshape(-1, alpha_acc.shape[-1])
 
     assert feat_acc.shape[0] >= N and alpha_acc.shape[0] >= N
+    assert feat_acc.shape[-1] == 7, f"expected feat_dim=7, got {feat_acc.shape[-1]}"
 
-    feat_dim = feat_acc.shape[-1]
-    assert feat_dim == 7, f"expected feat_dim=7, got {feat_dim}"
+    lut_flat = np.concatenate([feat_acc[:N], alpha_acc[:N]], axis=-1)
 
-    # Channels 0-3  → buffer A (feat[:4])
-    # Channels 4-6  → buffer B rgb (feat[4:7])
-    # Channel  7    → buffer B alpha (opacity mask)
-    lut_flat = np.concatenate([feat_acc[:N], alpha_acc[:N]], axis=-1)  # [N, 8]
-
-    # Choose a 2D packing — width 4096 is a safe GPU texture limit.
     tex_W = min(4096, N)
     tex_H = math.ceil(N / tex_W)
     padded = np.zeros((tex_H * tex_W, 8), dtype=np.float32)
@@ -80,14 +63,9 @@ def pack_face_color_lut(
 
 
 def extract_mlp_weights(state_dict: dict):
-    """Pull W1,b1,W2,b2,W3,b3 from the ColorMLP state dict.
-
-    Works regardless of key naming convention — we simply collect
-    (weight, bias) pairs in parameter order and match by shape.
-    """
+    """Pull W1,b1,W2,b2,W3,b3 from the ColorMLP state dict."""
     weights, biases = [], []
-    keys = list(state_dict.keys())
-    for k in keys:
+    for k in state_dict:
         t = state_dict[k].detach().cpu().numpy().astype(np.float32)
         if "weight" in k:
             weights.append(t)
@@ -96,36 +74,29 @@ def extract_mlp_weights(state_dict: dict):
 
     if len(weights) < 3 or len(biases) < 3:
         raise ValueError(
-            f"Expected ≥3 linear layers, found {len(weights)} weights and "
-            f"{len(biases)} biases.  State dict keys: {keys}"
+            f"Expected ≥3 linear layers, found {len(weights)} weights / "
+            f"{len(biases)} biases.  Keys: {list(state_dict.keys())}"
         )
 
     W1, W2, W3 = weights[0], weights[1], weights[2]
     b1, b2, b3 = biases[0], biases[1], biases[2]
-
-    assert W1.shape == (16, 16), f"W1 shape {W1.shape}"
-    assert W2.shape == (16, 16), f"W2 shape {W2.shape}"
-    assert W3.shape == (3, 16),  f"W3 shape {W3.shape}"
-
+    assert W1.shape == (16, 16) and W2.shape == (16, 16) and W3.shape == (3, 16)
     return W1, b1, W2, b2, W3, b3
 
 
-def detect_up_axis(ckpt: dict) -> str:
-    """Infer the world up-axis from checkpoint metadata.
+def detect_up(ckpt: dict) -> Tuple[float, float, float]:
+    """Infer the world up-direction from checkpoint metadata.
 
-    Detection logic:
-      1. Explicit 'up_axis' key in checkpoint  → use it directly.
-      2. 'flip_z' key present (01_mip360.py)   → COLMAP scene, up = "-y".
-      3. Otherwise (02_synthetic.py)            → NeRF-synthetic, up = "+z".
+    - Explicit 'up' key     → use it directly.
+    - 'flip_z' present      → COLMAP / MipNeRF-360 → (0, -1, 0).
+    - Otherwise             → NeRF-synthetic        → (0, 0, 1).
     """
-    if "up_axis" in ckpt:
-        return str(ckpt["up_axis"])
+    if "up" in ckpt:
+        u = ckpt["up"]
+        return (float(u[0]), float(u[1]), float(u[2]))
     if "flip_z" in ckpt:
-        return "-y"
-    # NeRF-synthetic / Blender: the OBJ loader swizzles vertices as
-    # [x, -z, y], and the MVP is built from the original transforms.
-    # Empirically, +Z up gives the correct orientation in the viewer.
-    return "+z"
+        return (0.0, -1.0, 0.0)
+    return (0.0, 0.0, 1.0)
 
 
 # ── Main ─────────────────────────────────────────────────────────────
@@ -135,20 +106,14 @@ def main():
     parser = argparse.ArgumentParser(
         description="Launch interactive DiffSoup viewer from a checkpoint.",
     )
-    parser.add_argument(
-        "--ckpt", type=str, required=True,
-        help="Path to final_params.pt",
-    )
-    parser.add_argument(
-        "--output_dir", type=str, default=None,
-        help="Directory for viewer screenshots (default: same as checkpoint)",
-    )
-    parser.add_argument(
-        "--up_axis", type=str, default=None,
-        help="World up direction for the orbit camera. "
-             "One of: pos_y, neg_y, pos_z, neg_z, +y, -y, +z, -z. "
-             "Auto-detected from checkpoint if omitted.",
-    )
+    parser.add_argument("--ckpt", type=str, required=True,
+                        help="Path to final_params.pt")
+    parser.add_argument("--output_dir", type=str, default=None,
+                        help="Directory for screenshots (default: beside ckpt)")
+    parser.add_argument("--up", type=float, nargs=3, default=None,
+                        metavar=("X", "Y", "Z"),
+                        help="World up direction, e.g. --up 0 0 1. "
+                             "Auto-detected from checkpoint if omitted.")
     args = parser.parse_args()
 
     ckpt_path = Path(args.ckpt)
@@ -163,52 +128,35 @@ def main():
     print(f"[load] {ckpt_path}")
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
 
-    verts = ckpt["V"].numpy().astype(np.float32)         # [V, 3]
-    faces = ckpt["F"].numpy().astype(np.int32)            # [F, 3]
+    verts     = ckpt["V"].numpy().astype(np.float32)
+    faces     = ckpt["F"].numpy().astype(np.int32)
     feat_acc  = ckpt["feat_acc"].numpy().astype(np.float32)
     alpha_acc = ckpt["alpha_acc"].numpy().astype(np.float32)
-
-    Rmax = int(ckpt["Rmax"])
-    feat_dim = int(ckpt["feat_dim"])
+    Rmax      = int(ckpt["Rmax"])
+    feat_dim  = int(ckpt["feat_dim"])
     num_faces = faces.shape[0]
 
     print(f"[mesh]  {verts.shape[0]:,} verts, {num_faces:,} faces")
     print(f"[level] Rmax={Rmax}  texels/face={level_size(Rmax)}")
     print(f"[feat]  dim={feat_dim}  feat_acc={feat_acc.shape}  alpha_acc={alpha_acc.shape}")
 
-    # ── Detect or override up-axis ───────────────────────────────────
-
-    up_axis = args.up_axis if args.up_axis else detect_up_axis(ckpt)
-    print(f"[cam]   up_axis={up_axis}")
-
-    # ── Build face-colour LUT ────────────────────────────────────────
+    up = tuple(args.up) if args.up else detect_up(ckpt)
+    print(f"[cam]   up={up}")
 
     face_color_lut = pack_face_color_lut(feat_acc, alpha_acc, num_faces, Rmax)
-    print(f"[lut]   texture {face_color_lut.shape[1]}×{face_color_lut.shape[0]}")
-
-    # ── Extract MLP weights ──────────────────────────────────────────
+    print(f"[lut]   texture {face_color_lut.shape[1]}x{face_color_lut.shape[0]}")
 
     if "color_mlp" not in ckpt:
-        raise KeyError(
-            "Checkpoint is missing 'color_mlp'.  Re-run training with the "
-            "updated saving code that includes color_mlp state_dict."
-        )
+        raise KeyError("Checkpoint missing 'color_mlp'.")
 
     W1, b1, W2, b2, W3, b3 = extract_mlp_weights(ckpt["color_mlp"])
     print(f"[mlp]   W1={W1.shape} W2={W2.shape} W3={W3.shape}")
 
-    # ── Launch viewer ────────────────────────────────────────────────
-
-    print(f"[viewer] launching interactive viewer …")
+    print("[viewer] launching …")
     diffsoupviewer.launch_viewer(
-        verts=verts,
-        faces=faces,
-        face_color_lut=face_color_lut,
-        W1=W1, b1=b1,
-        W2=W2, b2=b2,
-        W3=W3, b3=b3,
-        output_dir=output_dir,
-        up_axis=up_axis,
+        verts=verts, faces=faces, face_color_lut=face_color_lut,
+        W1=W1, b1=b1, W2=W2, b2=b2, W3=W3, b3=b3,
+        output_dir=output_dir, up=up,
     )
 
 

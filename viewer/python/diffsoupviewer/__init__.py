@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+from typing import Sequence
 
 import numpy as np
 
@@ -22,7 +23,7 @@ def launch_viewer(
     W3: np.ndarray,
     b3: np.ndarray,
     output_dir: str = "./results/viewer",
-    up_axis: str = "+z",
+    up: Sequence[float] = (0, 0, 1),
 ) -> None:
     """Open an interactive viewer window (blocks until closed).
 
@@ -33,10 +34,9 @@ def launch_viewer(
             (channels 0–3 → buffer A, channels 4–7 → buffer B).
         W1, b1, W2, b2, W3, b3: MLP weight matrices (float32).
         output_dir: directory for screenshots.
-        up_axis: world up direction for the orbit camera.
-            "+z" for NeRF-synthetic / Blender data,
-            "-y" for COLMAP / MipNeRF-360 data.
-            Can also be changed interactively via the GUI.
+        up: world-space up direction as (x, y, z).
+            Common choices: (0,0,1) for NeRF-synthetic, (0,-1,0) for COLMAP.
+            Can also be changed at runtime via the GUI.
     """
     V, _ = verts.shape
     F, _ = faces.shape
@@ -64,7 +64,7 @@ def launch_viewer(
         np.ascontiguousarray(W3),
         np.ascontiguousarray(b3),
         output_dir,
-        up_axis,
+        np.array(up, dtype=np.float32),
     )
 
 
@@ -85,7 +85,7 @@ def benchmark(
     warmup: int = 10,
     save_every: int = 0,
     output_dir: str = "./results/viewer",
-    up_axis: str = "+z",
+    up: Sequence[float] = (0, 0, 1),
 ) -> None:
     """Run a headless rendering benchmark.
 
@@ -100,7 +100,7 @@ def benchmark(
         warmup: frames to skip before timing.
         save_every: save a screenshot every N frames (0 = disable).
         output_dir: directory for logs and screenshots.
-        up_axis: world up direction (see launch_viewer).
+        up: world-space up direction (see launch_viewer).
     """
     assert verts.ndim == 2 and verts.shape[1] == 3
     assert faces.ndim == 2 and faces.shape[1] == 3
@@ -126,5 +126,5 @@ def benchmark(
         int(warmup),
         int(save_every),
         output_dir,
-        up_axis,
+        np.array(up, dtype=np.float32),
     )

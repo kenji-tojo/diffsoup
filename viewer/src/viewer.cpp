@@ -446,8 +446,8 @@ void Viewer::set_camera_target(const float target[3]) {
     m_camera->update();
 }
 
-void Viewer::set_up_axis(UpAxis axis) {
-    m_camera->up_axis = axis;
+void Viewer::set_world_up(const float up[3]) {
+    m_camera->world_up = glm::normalize(glm::vec3(up[0], up[1], up[2]));
     m_camera->update();
 }
 
@@ -676,9 +676,9 @@ void Viewer::render(const glm::mat4& mvp) {
     GL(glBindFramebuffer(GL_FRAMEBUFFER, m_fbo));
     GL(glViewport(0, 0, w, h));
 
-    const float bg = m_options.background_brightness;
-    const GLfloat clear_a[] = { bg, bg, bg, 1.f };
-    const GLfloat clear_b[] = { bg, bg, bg, 0.f };
+    const float* bg = m_options.background;
+    const GLfloat clear_a[] = { bg[0], bg[1], bg[2], 1.f };
+    const GLfloat clear_b[] = { bg[0], bg[1], bg[2], 0.f };
     GL(glClearBufferfv(GL_COLOR, 0, clear_a));
     GL(glClearBufferfv(GL_COLOR, 1, clear_b));
     GL(glClear(GL_DEPTH_BUFFER_BIT));
@@ -740,23 +740,7 @@ void Viewer::draw_gui() {
 
     ImGui::Text("Resolution: %dx%d", m_camera->width, m_camera->height);
     ImGui::Text("Faces: %d", m_face_count);
-    ImGui::SliderFloat("Background", &m_options.background_brightness, 0.f, 1.f);
-
-    // Up-axis selector
-    {
-        static const UpAxis axes[] = {
-            UpAxis::POS_Y, UpAxis::NEG_Y, UpAxis::POS_Z, UpAxis::NEG_Z
-        };
-        int current = 0;
-        for (int i = 0; i < 4; ++i)
-            if (axes[i] == m_camera->up_axis) { current = i; break; }
-
-        const char* labels[] = { "+Y", "-Y (COLMAP/MipNeRF-360)", "+Z (NeRF-synthetic)", "-Z" };
-        if (ImGui::Combo("Up axis", &current, labels, 4)) {
-            m_camera->up_axis = axes[current];
-            m_camera->update();
-        }
-    }
+    ImGui::ColorEdit3("Background", m_options.background);
 
     ImGui::SliderFloat("FOV", &m_camera->fov_y_deg, 10.f, 120.f);
     ImGui::SliderFloat("Distance", &m_camera->distance, 0.01f, 50.f, "%.2f", ImGuiSliderFlags_Logarithmic);
@@ -883,8 +867,8 @@ void Viewer::launch_benchmark(int width, int height,
         GL(glBindFramebuffer(GL_FRAMEBUFFER, m_fbo));
         GL(glViewport(0, 0, width, height));
 
-        const float bg = m_options.background_brightness;
-        const GLfloat c0[] = {bg,bg,bg,1.f}, c1[] = {bg,bg,bg,0.f};
+        const float* bg = m_options.background;
+        const GLfloat c0[] = {bg[0],bg[1],bg[2],1.f}, c1[] = {bg[0],bg[1],bg[2],0.f};
         GL(glClearBufferfv(GL_COLOR, 0, c0));
         GL(glClearBufferfv(GL_COLOR, 1, c1));
         GL(glClear(GL_DEPTH_BUFFER_BIT));

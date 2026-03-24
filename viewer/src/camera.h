@@ -1,4 +1,4 @@
-// camera.h — Orbit camera with configurable up-axis.
+// camera.h — Orbit camera with configurable up direction.
 
 #pragma once
 
@@ -7,14 +7,7 @@
 
 namespace viewer {
 
-/// World-space up direction.  Choose based on your dataset convention:
-///   POS_Z  — NeRF-synthetic (Blender-exported, after OBJ swizzle)
-///   NEG_Y  — COLMAP / MipNeRF-360 scenes
-///   POS_Y  — some OpenGL / game-engine data
-///   NEG_Z  — rare, but supported
-enum class UpAxis { POS_Y, NEG_Y, POS_Z, NEG_Z };
-
-/// A simple orbit camera that rotates around a target point.
+/// Orbit camera.  Pass any unit vector as world_up.
 ///
 /// Controls:
 ///   Left-drag   → orbit  (rotate yaw / pitch)
@@ -23,36 +16,29 @@ enum class UpAxis { POS_Y, NEG_Y, POS_Z, NEG_Z };
 class OrbitCamera {
 public:
     explicit OrbitCamera(int width = 800, int height = 800,
-                         UpAxis up = UpAxis::NEG_Y);
-
-    // ---- Interaction -------------------------------------------------------
+                         glm::vec3 up = {0.f, 0.f, 1.f});
 
     void begin_drag(float x, float y, bool pan);
     void drag_update(float x, float y);
     void end_drag();
     void scroll(float delta);
-
-    // ---- Matrices ----------------------------------------------------------
-
     void update();
 
     const glm::mat4& mvp()  const { return m_mvp; }
     const glm::mat4& view() const { return m_view; }
     const glm::mat4& proj() const { return m_proj; }
+    const glm::vec3& eye()  const { return m_eye; }
 
-    /// World-space eye position (recomputed on update()).
-    const glm::vec3& eye() const { return m_eye; }
-
-    // ---- Tunable state (public for GUI sliders) ----------------------------
+    // ---- Tunable state (public for GUI) ------------------------------------
 
     glm::vec3 target{0.f};
+    glm::vec3 world_up;       ///< Unit vector pointing "up" in world space.
     float distance  = 5.f;
-    float yaw       = 0.f;       ///< Horizontal angle (radians)
-    float pitch     = -0.35f;    ///< Vertical angle (radians); >0 = above target
+    float yaw       = 0.f;
+    float pitch     = -0.35f;
     float fov_y_deg = 40.f;
-    float near_clip = 0.01f;
-    float far_clip  = 100.f;
-    UpAxis up_axis;
+    float near_clip = 2.0f;
+    float far_clip  = 100.0f;
 
     int width, height;
 
@@ -62,7 +48,6 @@ private:
     glm::mat4 m_mvp{1.f};
     glm::vec3 m_eye{0.f};
 
-    // Drag bookkeeping
     bool  m_dragging   = false;
     bool  m_panning    = false;
     float m_drag_x     = 0.f;
@@ -75,12 +60,5 @@ private:
     static constexpr float kPanSpeed   = 0.003f;
     static constexpr float kScrollStep = 0.1f;
 };
-
-/// Parse a string like "pos_y", "neg_z", "+Y", "-Z", "y", "z" into UpAxis.
-/// Returns false if the string is not recognised.
-bool parse_up_axis(const char* str, UpAxis& out);
-
-/// Human-readable label (e.g. "+Y", "−Z").
-const char* up_axis_label(UpAxis a);
 
 }  // namespace viewer

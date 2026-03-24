@@ -4,86 +4,48 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstring>
 
 #include <glm/gtc/matrix_transform.hpp>
 
 namespace viewer {
 
 // ---------------------------------------------------------------------------
-// Up-axis helpers
+// Orbit helpers
 // ---------------------------------------------------------------------------
 
-static glm::vec3 up_vector(UpAxis a) {
-    switch (a) {
-        case UpAxis::POS_Y: return { 0.f,  1.f,  0.f};
-        case UpAxis::NEG_Y: return { 0.f, -1.f,  0.f};
-        case UpAxis::POS_Z: return { 0.f,  0.f,  1.f};
-        case UpAxis::NEG_Z: return { 0.f,  0.f, -1.f};
-    }
-    return {0.f, 1.f, 0.f};
+/// Build an orthonormal horizontal basis from an arbitrary up vector.
+/// Returns (right, forward) where up × right = forward.
+/// The sign convention is chosen so that lookAt + this basis give correct
+/// trackball drag behaviour for any up direction.
+static void horizontal_basis(const glm::vec3& up,
+                             glm::vec3& right, glm::vec3& fwd) {
+    // Pick a seed axis that isn't parallel to up.
+    glm::vec3 seed = (std::abs(up.x) < 0.9f) ? glm::vec3(1,0,0)
+                                               : glm::vec3(0,1,0);
+    // cross(seed, up) gives a right vector whose orbit tangent is opposite
+    // to lookAt's screen-right — exactly what trackball dragging needs.
+    right = glm::normalize(glm::cross(seed, up));
+    fwd   = glm::cross(up, right);
 }
 
-/// Compute eye offset from target in world space.
-/// yaw rotates horizontally (around the up axis).
-/// pitch lifts the eye above (+) or below (−) the horizontal plane.
-static glm::vec3 orbit_offset(UpAxis a, float yaw, float pitch, float dist) {
+/// Eye position relative to target.
+static glm::vec3 orbit_offset(const glm::vec3& up,
+                               float yaw, float pitch, float dist) {
+    glm::vec3 right, fwd;
+    horizontal_basis(up, right, fwd);
+
     const float cp = std::cos(pitch), sp = std::sin(pitch);
+    const float cy = std::cos(yaw),   sy = std::sin(yaw);
 
-    // For positive up-axes the cross product in lookAt flips the screen-right
-    // direction relative to the yaw rotation.  Negate yaw for those so that
-    // "drag right → scene rotates right" holds for every up-axis.
-    const float y = (a == UpAxis::POS_Y || a == UpAxis::POS_Z) ? -yaw : yaw;
-    const float cy = std::cos(y), sy = std::sin(y);
-
-    switch (a) {
-        case UpAxis::POS_Y:
-            return dist * glm::vec3(cp * sy, sp, cp * cy);
-        case UpAxis::NEG_Y:
-            return dist * glm::vec3(cp * sy, -sp, cp * cy);
-        case UpAxis::POS_Z:
-            return dist * glm::vec3(cp * cy, cp * sy, sp);
-        case UpAxis::NEG_Z:
-            return dist * glm::vec3(cp * cy, cp * sy, -sp);
-    }
-    return {};
-}
-
-bool parse_up_axis(const char* s, UpAxis& out) {
-    if (!s) return false;
-    // Skip leading whitespace / sign noise
-    auto eq = [](const char* a, const char* b) {
-        while (*a && *b) {
-            char ca = *a >= 'A' && *a <= 'Z' ? (*a + 32) : *a;
-            char cb = *b >= 'A' && *b <= 'Z' ? (*b + 32) : *b;
-            if (ca != cb) return false;
-            ++a; ++b;
-        }
-        return *a == 0 && *b == 0;
-    };
-    if (eq(s, "pos_y") || eq(s, "+y") || eq(s, "y"))  { out = UpAxis::POS_Y; return true; }
-    if (eq(s, "neg_y") || eq(s, "-y"))                 { out = UpAxis::NEG_Y; return true; }
-    if (eq(s, "pos_z") || eq(s, "+z") || eq(s, "z"))  { out = UpAxis::POS_Z; return true; }
-    if (eq(s, "neg_z") || eq(s, "-z"))                 { out = UpAxis::NEG_Z; return true; }
-    return false;
-}
-
-const char* up_axis_label(UpAxis a) {
-    switch (a) {
-        case UpAxis::POS_Y: return "+Y";
-        case UpAxis::NEG_Y: return "-Y";
-        case UpAxis::POS_Z: return "+Z";
-        case UpAxis::NEG_Z: return "-Z";
-    }
-    return "?";
+    return dist * (cp * (cy * fwd + sy * right) + sp * up);
 }
 
 // ---------------------------------------------------------------------------
 // OrbitCamera
 // ---------------------------------------------------------------------------
 
-OrbitCamera::OrbitCamera(int width, int height, UpAxis up)
-    : up_axis(up), width(width), height(height) {
+OrbitCamera::OrbitCamera(int width, int height, glm::vec3 up)
+    : world_up(glm::normalize(up)), width(width), height(height) {
     update();
 }
 
@@ -105,7 +67,6 @@ void OrbitCamera::drag_update(float x, float y) {
 
     if (m_panning) {
         const float speed = kPanSpeed * distance;
-        // Pan along camera-local right and up.
         const glm::vec3 right{m_view[0][0], m_view[1][0], m_view[2][0]};
         const glm::vec3 up   {m_view[0][1], m_view[1][1], m_view[2][1]};
         target = m_drag_target + right * dx * speed - up * dy * speed;
@@ -130,8 +91,8 @@ void OrbitCamera::scroll(float delta) {
 }
 
 void OrbitCamera::update() {
-    m_eye  = target + orbit_offset(up_axis, yaw, pitch, distance);
-    m_view = glm::lookAt(m_eye, target, up_vector(up_axis));
+    m_eye  = target + orbit_offset(world_up, yaw, pitch, distance);
+    m_view = glm::lookAt(m_eye, target, world_up);
 
     const float aspect = (height > 0) ? float(width) / float(height) : 1.f;
     m_proj = glm::perspective(glm::radians(fov_y_deg), aspect, near_clip, far_clip);
