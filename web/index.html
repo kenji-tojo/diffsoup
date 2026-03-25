@@ -1,0 +1,738 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>DiffSoup – Web Viewer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+  <style>
+    html, body { height: 100%; margin: 0; overflow: hidden; background: #fff; touch-action: none; }
+    #app { position: fixed; inset: 0; }
+
+    .panel {
+      position: fixed;
+      color: #ddd;
+      font: 13px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: #111b;
+      padding: 8px 12px;
+      border-radius: 8px;
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      z-index: 10;
+    }
+    #controls {
+      left: 12px; top: 12px;
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    #controls select {
+      font: inherit;
+      padding: 4px 6px;
+      border-radius: 4px;
+      border: 1px solid #555;
+      background: #222;
+      color: #eee;
+      cursor: pointer;
+      min-width: 120px;
+    }
+    #controls .info { font-size: 11px; color: #999; }
+    #controls .info.error { color: #ff6b6b; }
+
+    #fps-box {
+      right: 12px; top: 12px;
+      color: #8f8;
+      font: 12px/1 monospace;
+      padding: 5px 8px;
+    }
+
+    #help {
+      left: 50%; bottom: 16px;
+      transform: translateX(-50%);
+      font-size: 11px; color: #999;
+      padding: 6px 14px;
+      white-space: nowrap;
+      transition: opacity 0.6s;
+    }
+  </style>
+
+  <script type="importmap">
+  { "imports": { "three": "https://unpkg.com/three@0.159.0/build/three.module.js" } }
+  </script>
+</head>
+<body>
+  <div id="app"></div>
+
+  <div class="panel" id="controls">
+    <select id="model-select" disabled><option>loading…</option></select>
+    <div class="info" id="status">Initialising…</div>
+  </div>
+
+  <div class="panel" id="fps-box">– fps</div>
+
+  <div class="panel" id="help">
+    drag: orbit &nbsp;·&nbsp; right-drag / shift-drag: pan &nbsp;·&nbsp; scroll: zoom
+  </div>
+
+  <script type="module">
+    // ================================================================
+    //  DiffSoup Web Viewer
+    //
+    //  Serves from the same directory as this file.  Export scene data
+    //  with 06_export_web.py, then:
+    //
+    //    cd web
+    //    python -m http.server 8080 --bind 0.0.0.0
+    //
+    //  Desktop:  http://localhost:8080/?model=kitchen
+    //  Phone:    http://<your-ip>:8080/?model=kitchen
+    // ================================================================
+
+    import * as THREE from 'https://unpkg.com/three@0.159.0/build/three.module.js';
+    import { PLYLoader }     from 'https://unpkg.com/three@0.159.0/examples/jsm/loaders/PLYLoader.js';
+
+    const container = document.getElementById('app');
+    const status    = document.getElementById('status');
+    const fpsBox    = document.getElementById('fps-box');
+    const helpBox   = document.getElementById('help');
+    const selectEl  = document.getElementById('model-select');
+
+    setTimeout(() => { helpBox.style.opacity = '0'; }, 5000);
+
+    const params = new URLSearchParams(location.search);
+    let MODEL = params.get('model') || '';
+
+    // ================================================================
+    //  Orbit camera (ported from camera.cpp — correct for any up)
+    // ================================================================
+    class OrbitCamera {
+      constructor(canvas, camera) {
+        this.canvas   = canvas;
+        this.camera   = camera;
+        this.worldUp  = new THREE.Vector3(0, 1, 0);
+        this.target   = new THREE.Vector3();
+        this.distance = 6;
+        this.yaw      = 0;
+        this.pitch    = 0.35;
+        this.fovDeg   = 60;
+        this.nearClip = 3;
+        this.farClip  = 1000;
+
+        this._dragging = false;
+        this._panning  = false;
+        this._dragX = 0; this._dragY = 0;
+        this._dragYaw = 0; this._dragPitch = 0;
+        this._dragTarget = new THREE.Vector3();
+
+        this._eye   = new THREE.Vector3();
+        this._view  = new THREE.Matrix4();
+        this._right = new THREE.Vector3();
+        this._fwd   = new THREE.Vector3();
+
+        this._touches = new Map();
+        this._pinchDist0 = 0;
+        this._pinchDist0Dist = 0;
+        this._touchMid0 = [0, 0];
+
+        const ORBIT_SPEED = 0.005;
+        const PAN_SPEED   = 0.003;
+        const SCROLL_STEP = 0.1;
+        const PITCH_LIMIT = 89 * Math.PI / 180;
+
+        // ---- pointer events (mouse + stylus) ----
+        canvas.addEventListener('pointerdown', (e) => {
+          if (e.pointerType === 'touch') return; // handled separately
+          canvas.setPointerCapture(e.pointerId);
+          const pan = e.button === 2 || e.button === 1 || e.shiftKey;
+          this._beginDrag(e.clientX, e.clientY, pan);
+        });
+        canvas.addEventListener('pointermove', (e) => {
+          if (e.pointerType === 'touch' || !this._dragging) return;
+          const dx = e.clientX - this._dragX;
+          const dy = e.clientY - this._dragY;
+
+          if (this._panning) {
+            const speed = PAN_SPEED * this.distance;
+            const ve = this._view.elements;
+            const right = new THREE.Vector3(ve[0], ve[4], ve[8]);
+            const up    = new THREE.Vector3(ve[1], ve[5], ve[9]);
+            this.target.copy(this._dragTarget)
+              .addScaledVector(right, dx * speed)
+              .addScaledVector(up, -dy * speed);
+          } else {
+            this.yaw   = this._dragYaw   + dx * ORBIT_SPEED;
+            this.pitch = this._dragPitch  + dy * ORBIT_SPEED;
+            this.pitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, this.pitch));
+          }
+          this.update();
+        });
+        canvas.addEventListener('pointerup', (e) => {
+          if (e.pointerType !== 'touch') this._dragging = false;
+        });
+        canvas.addEventListener('pointercancel', (e) => {
+          if (e.pointerType !== 'touch') this._dragging = false;
+        });
+
+        canvas.addEventListener('wheel', (e) => {
+          e.preventDefault();
+          this.distance *= (e.deltaY < 0) ? (1 - SCROLL_STEP) : (1 + SCROLL_STEP);
+          this.distance  = Math.max(this.distance, 0.01);
+          this.update();
+        }, { passive: false });
+
+        canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+        // ---- touch events (one-finger orbit, two-finger pan + pinch) ----
+        canvas.addEventListener('touchstart', (e) => {
+          e.preventDefault();
+          for (const t of e.changedTouches)
+            this._touches.set(t.identifier, { x: t.clientX, y: t.clientY });
+
+          if (this._touches.size === 1) {
+            const [t] = this._touches.values();
+            this._beginDrag(t.x, t.y, false);
+          } else if (this._touches.size >= 2) {
+            this._dragging = false;
+            const pts = [...this._touches.values()];
+            this._pinchDist0 = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+            this._pinchDist0Dist = this.distance;
+            this._touchMid0 = [(pts[0].x + pts[1].x) / 2, (pts[0].y + pts[1].y) / 2];
+            this._dragTarget.copy(this.target);
+          }
+        }, { passive: false });
+
+        canvas.addEventListener('touchmove', (e) => {
+          e.preventDefault();
+          for (const t of e.changedTouches)
+            if (this._touches.has(t.identifier))
+              this._touches.set(t.identifier, { x: t.clientX, y: t.clientY });
+
+          if (this._touches.size === 1 && this._dragging) {
+            const [t] = this._touches.values();
+            const dx = t.x - this._dragX;
+            const dy = t.y - this._dragY;
+            this.yaw   = this._dragYaw   + dx * ORBIT_SPEED;
+            this.pitch = this._dragPitch  + dy * ORBIT_SPEED;
+            this.pitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, this.pitch));
+            this.update();
+          } else if (this._touches.size >= 2) {
+            const pts = [...this._touches.values()];
+            const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+            if (this._pinchDist0 > 1) {
+              this.distance = this._pinchDist0Dist * (this._pinchDist0 / Math.max(dist, 1));
+              this.distance = Math.max(this.distance, 0.01);
+            }
+            const mx = (pts[0].x + pts[1].x) / 2;
+            const my = (pts[0].y + pts[1].y) / 2;
+            const pdx = mx - this._touchMid0[0];
+            const pdy = my - this._touchMid0[1];
+            const speed = PAN_SPEED * this.distance;
+            const ve = this._view.elements;
+            const right = new THREE.Vector3(ve[0], ve[4], ve[8]);
+            const up    = new THREE.Vector3(ve[1], ve[5], ve[9]);
+            this.target.copy(this._dragTarget)
+              .addScaledVector(right, pdx * speed)
+              .addScaledVector(up, -pdy * speed);
+            this.update();
+          }
+        }, { passive: false });
+
+        const touchEnd = (e) => {
+          for (const t of e.changedTouches) this._touches.delete(t.identifier);
+          this._dragging = false;
+        };
+        canvas.addEventListener('touchend', touchEnd);
+        canvas.addEventListener('touchcancel', touchEnd);
+      }
+
+      _beginDrag(x, y, pan) {
+        this._dragging    = true;
+        this._panning     = pan;
+        this._dragX       = x;
+        this._dragY       = y;
+        this._dragYaw     = this.yaw;
+        this._dragPitch   = this.pitch;
+        this._dragTarget.copy(this.target);
+      }
+
+      _horizontalBasis() {
+        const up = this.worldUp;
+        const seed = (Math.abs(up.x) < 0.9)
+          ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+        this._right.crossVectors(seed, up).normalize();
+        this._fwd.crossVectors(up, this._right);
+      }
+
+      _orbitOffset() {
+        this._horizontalBasis();
+        const cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
+        const cy = Math.cos(this.yaw),   sy = Math.sin(this.yaw);
+        const d = this.distance;
+        return new THREE.Vector3()
+          .addScaledVector(this._fwd,    d * cp * cy)
+          .addScaledVector(this._right,  d * cp * sy)
+          .addScaledVector(this.worldUp, d * sp);
+      }
+
+      update() {
+        this._eye.copy(this.target).add(this._orbitOffset());
+        this.camera.up.copy(this.worldUp);
+        this.camera.position.copy(this._eye);
+        this.camera.lookAt(this.target);
+        this.camera.updateMatrixWorld(true);
+        this._view.copy(this.camera.matrixWorldInverse);
+        this.camera.fov  = this.fovDeg;
+        this.camera.near = this.nearClip;
+        this.camera.far  = this.farClip;
+        this.camera.updateProjectionMatrix();
+      }
+
+      frameBounds(center, radius) {
+        this.target.copy(center);
+        this.distance = radius * 1.6 / Math.tan(THREE.MathUtils.degToRad(this.fovDeg / 2));
+        this.yaw   = 0;
+        this.pitch = 0.35;
+        this.update();
+      }
+    }
+
+    // ================================================================
+    //  Renderer (WebGL2 + MRT required)
+    // ================================================================
+    const renderer = new THREE.WebGLRenderer({
+      antialias: false, alpha: false, depth: true,
+      stencil: false, powerPreference: 'high-performance',
+    });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.autoClear = false;
+    container.appendChild(renderer.domElement);
+
+    if (!renderer.capabilities.isWebGL2) {
+      status.classList.add('error');
+      status.textContent = 'WebGL 2 is required.';
+      throw new Error('WebGL2 not available');
+    }
+
+    const scene  = new THREE.Scene();
+    scene.background = new THREE.Color(1, 1, 1);
+
+    const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 3, 1000);
+    const orbit  = new OrbitCamera(renderer.domElement, camera);
+    orbit.update();
+
+    function createMRT(w, h) {
+      return new THREE.WebGLMultipleRenderTargets(w, h, 2, {
+        minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
+        wrapS: THREE.ClampToEdgeWrapping, wrapT: THREE.ClampToEdgeWrapping,
+        type: THREE.UnsignedByteType, depthBuffer: true, stencilBuffer: false,
+      });
+    }
+    let mrt = createMRT(innerWidth, innerHeight);
+
+    // ---- LUT loader ----
+    const texLoader = new THREE.TextureLoader();
+    function loadLUT(url) {
+      return new Promise((resolve, reject) => {
+        texLoader.load(url, (t) => {
+          t.flipY = false; t.generateMipmaps = false;
+          t.minFilter = THREE.NearestFilter; t.magFilter = THREE.NearestFilter;
+          t.wrapS = THREE.ClampToEdgeWrapping; t.wrapT = THREE.ClampToEdgeWrapping;
+          t.colorSpace = THREE.LinearSRGBColorSpace;
+          resolve(t);
+        }, undefined, reject);
+      });
+    }
+
+    // ---- MLP helpers ----
+    function tileWeightsToMat4(W, outDim, inDim) {
+      const mats = Array.from({ length: 16 }, () => new THREE.Matrix4());
+      for (let tr = 0; tr < 4; ++tr)
+        for (let tc = 0; tc < 4; ++tc) {
+          const e = mats[tr * 4 + tc].elements;
+          for (let c = 0; c < 4; ++c)
+            for (let r = 0; r < 4; ++r) {
+              const gr = tr * 4 + r, gc = tc * 4 + c;
+              e[c * 4 + r] = (gr < outDim && gc < inDim) ? W[gr * inDim + gc] : 0;
+            }
+        }
+      return mats;
+    }
+    function tileW3ToMat4(W3) {
+      const mats = Array.from({ length: 4 }, () => new THREE.Matrix4());
+      for (let tc = 0; tc < 4; ++tc) {
+        const e = mats[tc].elements;
+        for (let c = 0; c < 4; ++c)
+          for (let r = 0; r < 3; ++r) {
+            const gc = tc * 4 + c;
+            if (gc < 16) e[c * 4 + r] = W3[r * 16 + gc];
+          }
+      }
+      return mats;
+    }
+    function packBiasVec4(b, groups) {
+      const out = Array.from({ length: groups }, () => new THREE.Vector4());
+      for (let i = 0; i < b.length && i < groups * 4; ++i)
+        out[(i / 4) | 0].setComponent(i % 4, b[i]);
+      return out;
+    }
+    async function loadMLP(url) {
+      const j = await (await fetch(url)).json();
+      return {
+        W1: tileWeightsToMat4(j.W1, 16, 16), B1: packBiasVec4(j.b1, 4),
+        W2: tileWeightsToMat4(j.W2, 16, 16), B2: packBiasVec4(j.b2, 4),
+        W3: tileW3ToMat4(j.W3),
+        B3: new THREE.Vector4(j.b3[0], j.b3[1], j.b3[2], 0),
+      };
+    }
+
+    // ================================================================
+    //  Geometry-pass material
+    // ================================================================
+    const geomMat = new THREE.RawShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      uniforms: {
+        uTriTex0: { value: null }, uTriTex1: { value: null },
+        uTriTexSize: { value: new THREE.Vector2(1, 1) },
+        uLevel: { value: 5 },
+      },
+      vertexShader: /* glsl */`
+        in vec3 position;
+        in uint aTriID;
+        uniform mat4 projectionMatrix;
+        uniform mat4 modelViewMatrix;
+        flat out uint vTriID;
+        out vec3 vBary;
+        void main() {
+          vTriID = aTriID;
+          int corner = gl_VertexID % 3;
+          vBary = (corner==0) ? vec3(1,0,0) : (corner==1) ? vec3(0,1,0) : vec3(0,0,1);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: /* glsl */`
+        precision highp float;
+        precision highp int;
+        precision highp sampler2D;
+        flat in uint vTriID;
+        in vec3 vBary;
+        layout(location=0) out vec4 FragA;
+        layout(location=1) out vec4 FragB;
+        uniform ivec2 uTriTexSize;
+        uniform sampler2D uTriTex0;
+        uniform sampler2D uTriTex1;
+        uniform int uLevel;
+
+        ivec2 idx_to_coord(int idx, int texW) { return ivec2(idx % texW, idx / texW); }
+        int level_size(int L) {
+          if (L==0) return 3;
+          int a = (1 << (L-1)) + 1;
+          int b = (1 << L) + 1;
+          return a * b;
+        }
+
+        void main() {
+          int texW = uTriTexSize.x, texH = uTriTexSize.y;
+          if (texW*texH <= 0) { FragA = FragB = vec4(1,0,1,1); return; }
+
+          int S = level_size(uLevel);
+          int base = int(vTriID) * S;
+          float b0 = vBary.x, b1 = vBary.y;
+          int res = 1 << uLevel;
+          float res_f = float(res);
+
+          float b0l = b0 * res_f, b1l = b1 * res_f;
+          int x = clamp(int(floor(b0l)), 0, res-1);
+          int y = clamp(int(floor(b1l)), 0, (res-1)-x);
+          b0l -= float(x); b1l -= float(y);
+
+          bool flip = (b0l + b1l) > 1.0;
+          int flip_u = flip ? 1 : 0;
+          float flip_f = flip ? 1.0 : 0.0;
+
+          int x0=x+1, y0=y;
+          int x1=x,   y1=y+1;
+          int x2=x+flip_u, y2=min(y+flip_u, res-x2);
+
+          int idx0 = (x0+y0)*(x0+y0+1)/2 + y0;
+          int idx1 = (x1+y1)*(x1+y1+1)/2 + y1;
+          int idx2 = (x2+y2)*(x2+y2+1)/2 + y2;
+
+          float w0 = mix(b0l, 1.0-b1l, flip_f);
+          float w1 = mix(b1l, 1.0-b0l, flip_f);
+          float w2 = 1.0 - w0 - w1;
+
+          ivec2 c0 = idx_to_coord(base+idx0, texW);
+          ivec2 c1 = idx_to_coord(base+idx1, texW);
+          ivec2 c2 = idx_to_coord(base+idx2, texW);
+
+          vec4 a = texelFetch(uTriTex0, c0, 0)*w0 + texelFetch(uTriTex0, c1, 0)*w1 + texelFetch(uTriTex0, c2, 0)*w2;
+          vec4 b = texelFetch(uTriTex1, c0, 0)*w0 + texelFetch(uTriTex1, c1, 0)*w1 + texelFetch(uTriTex1, c2, 0)*w2;
+
+          if (b.a < 0.5) discard;
+          FragA = a;
+          FragB = vec4(b.rgb, 1.0);
+        }
+      `,
+      depthTest: true, depthWrite: true, side: THREE.DoubleSide,
+    });
+
+    // ================================================================
+    //  Post-composite pass (full-screen MLP)
+    // ================================================================
+    const postScene = new THREE.Scene();
+    const postCam   = new THREE.OrthographicCamera(-1,1,1,-1,0,1);
+
+    const postMat = new THREE.RawShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      uniforms: {
+        texA: { value: mrt.texture[0] }, texB: { value: mrt.texture[1] },
+        uInvPV: { value: new THREE.Matrix4() },
+        W1: { value: Array.from({length:16}, ()=>new THREE.Matrix4()) },
+        B1: { value: Array.from({length:4},  ()=>new THREE.Vector4()) },
+        W2: { value: Array.from({length:16}, ()=>new THREE.Matrix4()) },
+        B2: { value: Array.from({length:4},  ()=>new THREE.Vector4()) },
+        W3: { value: Array.from({length:4},  ()=>new THREE.Matrix4()) },
+        B3: { value: new THREE.Vector4() },
+      },
+      vertexShader: /* glsl */`
+        in vec3 position; out vec2 vUV;
+        void main() {
+          gl_Position = vec4(position.xy, 0.0, 1.0);
+          vUV = 0.5 * (gl_Position.xy + 1.0);
+        }
+      `,
+      fragmentShader: /* glsl */`
+        precision highp float;
+        in vec2 vUV; out vec4 FragColor;
+        uniform sampler2D texA, texB;
+        uniform mat4 uInvPV;
+        uniform mat4 W1[16]; uniform vec4 B1[4];
+        uniform mat4 W2[16]; uniform vec4 B2[4];
+        uniform mat4 W3[4];  uniform vec4 B3;
+
+        vec4 relu4(vec4 x){ return max(x,0.0); }
+        float sigmoid(float x){ return 1.0/(1.0+exp(-x)); }
+
+        vec3 ndcToWorld(vec4 ndc, mat4 inv){
+          vec4 c = inv * ndc;
+          float w = c.w; if(abs(w)<1e-20) w=1e-20;
+          return c.xyz / w;
+        }
+
+        const float SH_C0   =  0.28209479177387814;
+        const float SH_C1   =  0.4886025119029199;
+        const float SH_C2_0 =  1.0925484305920792;
+        const float SH_C2_1 = -1.0925484305920792;
+        const float SH_C2_2 =  0.31539156525252005;
+        const float SH_C2_3 = -1.0925484305920792;
+        const float SH_C2_4 =  0.5462742152960396;
+
+        void eval_sh2(in vec3 d, out float sh[9]){
+          sh[0] = SH_C0;
+          sh[1] = -SH_C1*d.y; sh[2] = SH_C1*d.z; sh[3] = -SH_C1*d.x;
+          float xx=d.x*d.x, yy=d.y*d.y, zz=d.z*d.z;
+          sh[4] = SH_C2_0*d.x*d.y; sh[5] = SH_C2_1*d.y*d.z;
+          sh[6] = SH_C2_2*(2.0*zz-xx-yy);
+          sh[7] = SH_C2_3*d.x*d.z; sh[8] = SH_C2_4*(xx-yy);
+        }
+
+        void main(){
+          vec4 A = texture(texA, vUV);
+          vec4 B = texture(texB, vUV);
+          if(B.a < 0.5){ FragColor = vec4(A.rgb,1.0); return; }
+
+          float ndc_x = vUV.x*2.0-1.0;
+          float ndc_y = 1.0-vUV.y*2.0;
+          vec3 w_near = ndcToWorld(vec4(ndc_x,ndc_y,-1.0,1.0), uInvPV);
+          vec3 w_far  = ndcToWorld(vec4(ndc_x,ndc_y, 1.0,1.0), uInvPV);
+          vec3 v = normalize(w_near - w_far);
+
+          float sh[9]; eval_sh2(v, sh);
+
+          vec4 x0=vec4(A.r,A.g,A.b,A.a);
+          vec4 x1=vec4(B.r,B.g,B.b,sh[0]);
+          vec4 x2=vec4(sh[1],sh[2],sh[3],sh[4]);
+          vec4 x3=vec4(sh[5],sh[6],sh[7],sh[8]);
+
+          vec4 y0=relu4(W1[ 0]*x0+W1[ 1]*x1+W1[ 2]*x2+W1[ 3]*x3+B1[0]);
+          vec4 y1=relu4(W1[ 4]*x0+W1[ 5]*x1+W1[ 6]*x2+W1[ 7]*x3+B1[1]);
+          vec4 y2=relu4(W1[ 8]*x0+W1[ 9]*x1+W1[10]*x2+W1[11]*x3+B1[2]);
+          vec4 y3=relu4(W1[12]*x0+W1[13]*x1+W1[14]*x2+W1[15]*x3+B1[3]);
+
+          vec4 z0=relu4(W2[ 0]*y0+W2[ 1]*y1+W2[ 2]*y2+W2[ 3]*y3+B2[0]);
+          vec4 z1=relu4(W2[ 4]*y0+W2[ 5]*y1+W2[ 6]*y2+W2[ 7]*y3+B2[1]);
+          vec4 z2=relu4(W2[ 8]*y0+W2[ 9]*y1+W2[10]*y2+W2[11]*y3+B2[2]);
+          vec4 z3=relu4(W2[12]*y0+W2[13]*y1+W2[14]*y2+W2[15]*y3+B2[3]);
+
+          vec4 acc = W3[0]*z0+W3[1]*z1+W3[2]*z2+W3[3]*z3+B3;
+          vec3 mlp = vec3(sigmoid(acc.x),sigmoid(acc.y),sigmoid(acc.z));
+          FragColor = vec4(mix(A.rgb, mlp, A.a), 1.0);
+        }
+      `,
+      depthTest: false, depthWrite: false,
+    });
+    postScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2,2), postMat));
+
+    // ================================================================
+    //  Mesh loading
+    // ================================================================
+    let drawMesh = null;
+
+    function attachTriIDs(geo) {
+      const n = (geo.attributes.position.count / 3) | 0;
+      const ids = new Uint32Array(n * 3);
+      for (let f = 0; f < n; ++f) ids[3*f]=ids[3*f+1]=ids[3*f+2]=f;
+      geo.setAttribute('aTriID', new THREE.Uint32BufferAttribute(ids, 1));
+    }
+
+    // ================================================================
+    //  FPS counter
+    // ================================================================
+    let prevTime = performance.now(), frameCount = 0;
+    function updateFPS() {
+      const now = performance.now(); frameCount++;
+      if (now - prevTime > 1000) {
+        fpsBox.textContent = `${(frameCount*1000/(now-prevTime)).toFixed(1)} fps`;
+        prevTime = now; frameCount = 0;
+      }
+    }
+
+    // ================================================================
+    //  Model dropdown
+    // ================================================================
+    async function initDropdown() {
+      let models;
+      try {
+        const res = await fetch('data/models.json');
+        if (!res.ok) throw new Error(res.statusText);
+        models = await res.json();
+      } catch {
+        status.classList.add('error');
+        status.textContent = 'No models found. Run 06_export_web.py first.';
+        selectEl.innerHTML = '<option>—</option>';
+        return null;
+      }
+      if (!models.length) { status.textContent = 'models.json is empty.'; return null; }
+
+      selectEl.innerHTML = models.map(m =>
+        `<option value="${m}" ${m===MODEL?'selected':''}>${m}</option>`
+      ).join('');
+      selectEl.disabled = false;
+
+      if (!MODEL || !models.includes(MODEL)) { MODEL = models[0]; selectEl.value = MODEL; }
+
+      selectEl.addEventListener('change', () => {
+        const url = new URL(location);
+        url.searchParams.set('model', selectEl.value);
+        location.href = url;
+      });
+      return MODEL;
+    }
+
+    // ================================================================
+    //  Load scene
+    // ================================================================
+    async function loadScene(model) {
+      const base = `data/${model}`;
+      status.textContent = `Loading ${model}…`;
+
+      let meta;
+      try { meta = await (await fetch(`${base}/meta.json`)).json(); }
+      catch { meta = { up: [0,-1,0], level: 5, background: [1,1,1] }; }
+
+      const up = meta.up || [0,-1,0];
+      orbit.worldUp.set(up[0], up[1], up[2]).normalize();
+
+      const bg = meta.background || [1,1,1];
+      scene.background = new THREE.Color(bg[0], bg[1], bg[2]);
+
+      geomMat.uniforms.uLevel.value = meta.level ?? 5;
+
+      const [tri0, tri1, mlp] = await Promise.all([
+        loadLUT(`${base}/lut0.png`),
+        loadLUT(`${base}/lut1.png`),
+        loadMLP(`${base}/mlp_weights.json`),
+      ]);
+
+      geomMat.uniforms.uTriTex0.value = tri0;
+      geomMat.uniforms.uTriTex1.value = tri1;
+      geomMat.uniforms.uTriTexSize.value.set(tri0.image.width|0, tri0.image.height|0);
+
+      postMat.uniforms.W1.value = mlp.W1; postMat.uniforms.B1.value = mlp.B1;
+      postMat.uniforms.W2.value = mlp.W2; postMat.uniforms.B2.value = mlp.B2;
+      postMat.uniforms.W3.value = mlp.W3; postMat.uniforms.B3.value.copy(mlp.B3);
+      postMat.needsUpdate = true;
+
+      await new Promise((resolve, reject) => {
+        new PLYLoader().load(`${base}/mesh.ply`, (g) => {
+          const geo = g.index ? g.toNonIndexed() : g;
+          geo.center();
+          attachTriIDs(geo);
+
+          if (drawMesh) { scene.remove(drawMesh); drawMesh.geometry.dispose(); }
+          drawMesh = new THREE.Mesh(geo, geomMat);
+          scene.add(drawMesh);
+
+          geo.computeBoundingSphere();
+          orbit.frameBounds(geo.boundingSphere.center, geo.boundingSphere.radius);
+          resolve();
+        }, undefined, reject);
+      });
+
+      const nf = meta.num_faces ?? '?';
+      status.textContent = `${model}  ·  ${Number(nf).toLocaleString()} faces`;
+    }
+
+    // ================================================================
+    //  Init
+    // ================================================================
+    (async () => {
+      const model = await initDropdown();
+      if (!model) return;
+      try { await loadScene(model); }
+      catch (e) {
+        console.error(e);
+        status.classList.add('error');
+        status.textContent = `Failed to load "${model}": ${e.message}`;
+      }
+    })();
+
+    // ================================================================
+    //  Render loop
+    // ================================================================
+    const tmpPV = new THREE.Matrix4();
+    function render() {
+      requestAnimationFrame(render);
+      if (!drawMesh) return;
+
+      renderer.setRenderTarget(mrt);
+      renderer.setClearColor(scene.background, 0);
+      renderer.clear(true, true, true);
+      renderer.render(scene, camera);
+
+      tmpPV.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+      postMat.uniforms.uInvPV.value.copy(tmpPV).invert();
+
+      renderer.setRenderTarget(null);
+      renderer.setClearColor(0x000000, 1);
+      renderer.clear(true, false, false);
+      renderer.render(postScene, postCam);
+
+      updateFPS();
+    }
+    render();
+
+    // ================================================================
+    //  Resize
+    // ================================================================
+    addEventListener('resize', () => {
+      const w = innerWidth, h = innerHeight;
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+      mrt.dispose();
+      mrt = createMRT(w, h);
+      postMat.uniforms.texA.value = mrt.texture[0];
+      postMat.uniforms.texB.value = mrt.texture[1];
+    });
+  </script>
+</body>
+</html>
