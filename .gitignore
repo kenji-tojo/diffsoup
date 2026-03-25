@@ -209,3 +209,4 @@ __marimo__/
 # Repo-specific ignores
 datasets/
 results/
+**.DS_Store
