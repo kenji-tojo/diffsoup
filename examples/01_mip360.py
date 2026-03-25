@@ -52,15 +52,18 @@ torch.cuda.manual_seed_all(SEED)
 # ── Main ─────────────────────────────────────────────────────────────
 
 def main(
-    scene_root: str = "./datasets/360_v2/garden",
+    scene_root: str = "./datasets/360_v2/kitchen",
     batch_size: int = 4,
     steps: int = 10_000,
     n_points: Optional[int] = 15_000,
     downscale: int = 4,
     flip_z: bool = True,
-    out_dir: str = "./output/mip360",
+    out_dir: Optional[str] = None,
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    scene_name = os.path.basename(os.path.normpath(scene_root))
+    if out_dir is None:
+        out_dir = os.path.join("./results/01_mip360", scene_name)
     os.makedirs(out_dir, exist_ok=True)
 
     # ── Load data ────────────────────────────────────────────────────
@@ -442,7 +445,8 @@ if __name__ == "__main__":
     parser.add_argument("--downscale", type=int, default=4, choices=[0, 1, 2, 4, 8],
                         help="Image downscale factor: 0/1=images/, 2=images_2/, 4=images_4/, 8=images_8/")
     parser.add_argument("--flip_z", action="store_true", default=True)
-    parser.add_argument("--out_dir", type=str, default="./results/01_mip360")
+    parser.add_argument("--out_dir", type=str, default=None,
+                        help="Output directory (default: ./results/01_mip360/<scene>)")
     args = parser.parse_args()
 
     main(
