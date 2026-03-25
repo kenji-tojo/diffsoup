@@ -118,8 +118,8 @@ python3 -m http.server 8080 --bind 0.0.0.0
 
 **Step 3: Open in a browser**
 
-- Desktop: [http://localhost:8080/?model=kitchen](http://localhost:8080/?model=kitchen)
-- Phone (same network): `http://<your-lan-ip>:8080/?model=kitchen`
+- Desktop: [http://localhost:8080](http://localhost:8080)
+- Phone (same network): `http://<your-lan-ip>:8080`
 
 Use the dropdown in the top-left corner to switch between exported scenes. To find your LAN IP, run `hostname -I` on Linux or `ifconfig | grep inet` on macOS.
 

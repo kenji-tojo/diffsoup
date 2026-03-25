@@ -5,7 +5,7 @@
   <title>DiffSoup – Web Viewer</title>
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
   <style>
-    html, body { height: 100%; margin: 0; overflow: hidden; background: #fff; touch-action: none; }
+    html, body { height: 100%; margin: 0; overflow: hidden; background: #000; touch-action: none; }
     #app { position: fixed; inset: 0; }
 
     .panel {
@@ -23,7 +23,7 @@
       left: 12px; top: 12px;
       display: flex; flex-direction: column; gap: 6px;
     }
-    #controls select {
+    #controls select, #controls input[type=color] {
       font: inherit;
       padding: 4px 6px;
       border-radius: 4px;
@@ -31,7 +31,13 @@
       background: #222;
       color: #eee;
       cursor: pointer;
-      min-width: 120px;
+    }
+    #controls select { min-width: 120px; }
+    #controls input[type=color] {
+      width: 32px; height: 24px; padding: 1px 2px;
+    }
+    #controls .row {
+      display: flex; align-items: center; gap: 6px;
     }
     #controls .info { font-size: 11px; color: #999; }
     #controls .info.error { color: #ff6b6b; }
@@ -62,6 +68,10 @@
 
   <div class="panel" id="controls">
     <select id="model-select" disabled><option>loading…</option></select>
+    <div class="row">
+      <span style="font-size:11px; color:#999;">bg</span>
+      <input type="color" id="bg-picker" value="#000000" />
+    </div>
     <div class="info" id="status">Initialising…</div>
   </div>
 
@@ -75,14 +85,12 @@
     // ================================================================
     //  DiffSoup Web Viewer
     //
-    //  Serves from the same directory as this file.  Export scene data
-    //  with 06_export_web.py, then:
+    //  Export scene data with 06_export_web.py, then:
     //
     //    cd web
     //    python -m http.server 8080 --bind 0.0.0.0
     //
-    //  Desktop:  http://localhost:8080/?model=kitchen
-    //  Phone:    http://<your-ip>:8080/?model=kitchen
+    //  Open:  http://localhost:8080
     // ================================================================
 
     import * as THREE from 'https://unpkg.com/three@0.159.0/build/three.module.js';
@@ -93,11 +101,15 @@
     const fpsBox    = document.getElementById('fps-box');
     const helpBox   = document.getElementById('help');
     const selectEl  = document.getElementById('model-select');
+    const bgPicker  = document.getElementById('bg-picker');
 
     setTimeout(() => { helpBox.style.opacity = '0'; }, 5000);
 
     const params = new URLSearchParams(location.search);
     let MODEL = params.get('model') || '';
+
+    // Current background colour (linear 0–1).
+    let bgColor = [0, 0, 0];
 
     // ================================================================
     //  Orbit camera (ported from camera.cpp — correct for any up)
@@ -136,9 +148,8 @@
         const SCROLL_STEP = 0.1;
         const PITCH_LIMIT = 89 * Math.PI / 180;
 
-        // ---- pointer events (mouse + stylus) ----
         canvas.addEventListener('pointerdown', (e) => {
-          if (e.pointerType === 'touch') return; // handled separately
+          if (e.pointerType === 'touch') return;
           canvas.setPointerCapture(e.pointerId);
           const pan = e.button === 2 || e.button === 1 || e.shiftKey;
           this._beginDrag(e.clientX, e.clientY, pan);
@@ -147,7 +158,6 @@
           if (e.pointerType === 'touch' || !this._dragging) return;
           const dx = e.clientX - this._dragX;
           const dy = e.clientY - this._dragY;
-
           if (this._panning) {
             const speed = PAN_SPEED * this.distance;
             const ve = this._view.elements;
@@ -169,22 +179,18 @@
         canvas.addEventListener('pointercancel', (e) => {
           if (e.pointerType !== 'touch') this._dragging = false;
         });
-
         canvas.addEventListener('wheel', (e) => {
           e.preventDefault();
           this.distance *= (e.deltaY < 0) ? (1 - SCROLL_STEP) : (1 + SCROLL_STEP);
           this.distance  = Math.max(this.distance, 0.01);
           this.update();
         }, { passive: false });
-
         canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
-        // ---- touch events (one-finger orbit, two-finger pan + pinch) ----
         canvas.addEventListener('touchstart', (e) => {
           e.preventDefault();
           for (const t of e.changedTouches)
             this._touches.set(t.identifier, { x: t.clientX, y: t.clientY });
-
           if (this._touches.size === 1) {
             const [t] = this._touches.values();
             this._beginDrag(t.x, t.y, false);
@@ -197,19 +203,15 @@
             this._dragTarget.copy(this.target);
           }
         }, { passive: false });
-
         canvas.addEventListener('touchmove', (e) => {
           e.preventDefault();
           for (const t of e.changedTouches)
             if (this._touches.has(t.identifier))
               this._touches.set(t.identifier, { x: t.clientX, y: t.clientY });
-
           if (this._touches.size === 1 && this._dragging) {
             const [t] = this._touches.values();
-            const dx = t.x - this._dragX;
-            const dy = t.y - this._dragY;
-            this.yaw   = this._dragYaw   + dx * ORBIT_SPEED;
-            this.pitch = this._dragPitch  + dy * ORBIT_SPEED;
+            this.yaw   = this._dragYaw   + (t.x - this._dragX) * ORBIT_SPEED;
+            this.pitch = this._dragPitch  + (t.y - this._dragY) * ORBIT_SPEED;
             this.pitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, this.pitch));
             this.update();
           } else if (this._touches.size >= 2) {
@@ -219,21 +221,17 @@
               this.distance = this._pinchDist0Dist * (this._pinchDist0 / Math.max(dist, 1));
               this.distance = Math.max(this.distance, 0.01);
             }
-            const mx = (pts[0].x + pts[1].x) / 2;
-            const my = (pts[0].y + pts[1].y) / 2;
-            const pdx = mx - this._touchMid0[0];
-            const pdy = my - this._touchMid0[1];
+            const mx = (pts[0].x + pts[1].x) / 2, my = (pts[0].y + pts[1].y) / 2;
             const speed = PAN_SPEED * this.distance;
             const ve = this._view.elements;
             const right = new THREE.Vector3(ve[0], ve[4], ve[8]);
             const up    = new THREE.Vector3(ve[1], ve[5], ve[9]);
             this.target.copy(this._dragTarget)
-              .addScaledVector(right, pdx * speed)
-              .addScaledVector(up, -pdy * speed);
+              .addScaledVector(right, (mx - this._touchMid0[0]) * speed)
+              .addScaledVector(up, -(my - this._touchMid0[1]) * speed);
             this.update();
           }
         }, { passive: false });
-
         const touchEnd = (e) => {
           for (const t of e.changedTouches) this._touches.delete(t.identifier);
           this._dragging = false;
@@ -243,34 +241,27 @@
       }
 
       _beginDrag(x, y, pan) {
-        this._dragging    = true;
-        this._panning     = pan;
-        this._dragX       = x;
-        this._dragY       = y;
-        this._dragYaw     = this.yaw;
-        this._dragPitch   = this.pitch;
+        this._dragging = true; this._panning = pan;
+        this._dragX = x; this._dragY = y;
+        this._dragYaw = this.yaw; this._dragPitch = this.pitch;
         this._dragTarget.copy(this.target);
       }
-
       _horizontalBasis() {
         const up = this.worldUp;
-        const seed = (Math.abs(up.x) < 0.9)
-          ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+        const seed = (Math.abs(up.x) < 0.9) ? new THREE.Vector3(1,0,0) : new THREE.Vector3(0,1,0);
         this._right.crossVectors(seed, up).normalize();
         this._fwd.crossVectors(up, this._right);
       }
-
       _orbitOffset() {
         this._horizontalBasis();
         const cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
         const cy = Math.cos(this.yaw),   sy = Math.sin(this.yaw);
         const d = this.distance;
         return new THREE.Vector3()
-          .addScaledVector(this._fwd,    d * cp * cy)
-          .addScaledVector(this._right,  d * cp * sy)
-          .addScaledVector(this.worldUp, d * sp);
+          .addScaledVector(this._fwd, d*cp*cy)
+          .addScaledVector(this._right, d*cp*sy)
+          .addScaledVector(this.worldUp, d*sp);
       }
-
       update() {
         this._eye.copy(this.target).add(this._orbitOffset());
         this.camera.up.copy(this.worldUp);
@@ -278,23 +269,19 @@
         this.camera.lookAt(this.target);
         this.camera.updateMatrixWorld(true);
         this._view.copy(this.camera.matrixWorldInverse);
-        this.camera.fov  = this.fovDeg;
-        this.camera.near = this.nearClip;
-        this.camera.far  = this.farClip;
+        this.camera.fov = this.fovDeg; this.camera.near = this.nearClip; this.camera.far = this.farClip;
         this.camera.updateProjectionMatrix();
       }
-
       frameBounds(center, radius) {
         this.target.copy(center);
         this.distance = radius * 1.6 / Math.tan(THREE.MathUtils.degToRad(this.fovDeg / 2));
-        this.yaw   = 0;
-        this.pitch = 0.35;
+        this.yaw = 0; this.pitch = 0.35;
         this.update();
       }
     }
 
     // ================================================================
-    //  Renderer (WebGL2 + MRT required)
+    //  Renderer (WebGL2 + MRT)
     // ================================================================
     const renderer = new THREE.WebGLRenderer({
       antialias: false, alpha: false, depth: true,
@@ -310,10 +297,10 @@
       status.textContent = 'WebGL 2 is required.';
       throw new Error('WebGL2 not available');
     }
+    const gl = renderer.getContext();
 
+    // No scene.background — we clear MRT attachments manually.
     const scene  = new THREE.Scene();
-    scene.background = new THREE.Color(1, 1, 1);
-
     const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 3, 1000);
     const orbit  = new OrbitCamera(renderer.domElement, camera);
     orbit.update();
@@ -326,6 +313,24 @@
       });
     }
     let mrt = createMRT(innerWidth, innerHeight);
+
+    // ---- helpers ----
+    function setBgColor(r, g, b) {
+      bgColor = [r, g, b];
+      postMat.uniforms.uBgColor.value.set(r, g, b);
+      document.body.style.background = `rgb(${r*255|0},${g*255|0},${b*255|0})`;
+      // Sync color picker (sRGB hex).
+      const hex = '#' + [r,g,b].map(c => Math.round(c*255).toString(16).padStart(2,'0')).join('');
+      bgPicker.value = hex;
+    }
+
+    bgPicker.addEventListener('input', () => {
+      const h = bgPicker.value;
+      const r = parseInt(h.slice(1,3),16)/255;
+      const g = parseInt(h.slice(3,5),16)/255;
+      const b = parseInt(h.slice(5,7),16)/255;
+      setBgColor(r, g, b);
+    });
 
     // ---- LUT loader ----
     const texLoader = new THREE.TextureLoader();
@@ -475,7 +480,7 @@
     });
 
     // ================================================================
-    //  Post-composite pass (full-screen MLP)
+    //  Post-composite pass (MLP + background)
     // ================================================================
     const postScene = new THREE.Scene();
     const postCam   = new THREE.OrthographicCamera(-1,1,1,-1,0,1);
@@ -485,6 +490,7 @@
       uniforms: {
         texA: { value: mrt.texture[0] }, texB: { value: mrt.texture[1] },
         uInvPV: { value: new THREE.Matrix4() },
+        uBgColor: { value: new THREE.Vector3(0, 0, 0) },
         W1: { value: Array.from({length:16}, ()=>new THREE.Matrix4()) },
         B1: { value: Array.from({length:4},  ()=>new THREE.Vector4()) },
         W2: { value: Array.from({length:16}, ()=>new THREE.Matrix4()) },
@@ -504,6 +510,7 @@
         in vec2 vUV; out vec4 FragColor;
         uniform sampler2D texA, texB;
         uniform mat4 uInvPV;
+        uniform vec3 uBgColor;
         uniform mat4 W1[16]; uniform vec4 B1[4];
         uniform mat4 W2[16]; uniform vec4 B2[4];
         uniform mat4 W3[4];  uniform vec4 B3;
@@ -535,9 +542,12 @@
         }
 
         void main(){
-          vec4 A = texture(texA, vUV);
           vec4 B = texture(texB, vUV);
-          if(B.a < 0.5){ FragColor = vec4(A.rgb,1.0); return; }
+
+          // Background: attachment 1 was cleared to alpha=0.
+          if(B.a < 0.5){ FragColor = vec4(uBgColor, 1.0); return; }
+
+          vec4 A = texture(texA, vUV);
 
           float ndc_x = vUV.x*2.0-1.0;
           float ndc_y = 1.0-vUV.y*2.0;
@@ -612,19 +622,26 @@
       }
       if (!models.length) { status.textContent = 'models.json is empty.'; return null; }
 
-      selectEl.innerHTML = models.map(m =>
-        `<option value="${m}" ${m===MODEL?'selected':''}>${m}</option>`
-      ).join('');
+      // If no model specified, show a prompt option.
+      const hasModel = MODEL && models.includes(MODEL);
+      selectEl.innerHTML =
+        (hasModel ? '' : '<option value="" selected disabled>Select a model…</option>') +
+        models.map(m =>
+          `<option value="${m}" ${m===MODEL?'selected':''}>${m}</option>`
+        ).join('');
       selectEl.disabled = false;
-
-      if (!MODEL || !models.includes(MODEL)) { MODEL = models[0]; selectEl.value = MODEL; }
 
       selectEl.addEventListener('change', () => {
         const url = new URL(location);
         url.searchParams.set('model', selectEl.value);
         location.href = url;
       });
-      return MODEL;
+
+      if (hasModel) return MODEL;
+
+      // No model param — prompt user.
+      status.textContent = 'Select a model to view.';
+      return null;
     }
 
     // ================================================================
@@ -636,13 +653,13 @@
 
       let meta;
       try { meta = await (await fetch(`${base}/meta.json`)).json(); }
-      catch { meta = { up: [0,-1,0], level: 5, background: [1,1,1] }; }
+      catch { meta = { up: [0,-1,0], level: 5, background: [0,0,0] }; }
 
       const up = meta.up || [0,-1,0];
       orbit.worldUp.set(up[0], up[1], up[2]).normalize();
 
-      const bg = meta.background || [1,1,1];
-      scene.background = new THREE.Color(bg[0], bg[1], bg[2]);
+      const bg = meta.background || [0,0,0];
+      setBgColor(bg[0], bg[1], bg[2]);
 
       geomMat.uniforms.uLevel.value = meta.level ?? 5;
 
@@ -664,15 +681,20 @@
       await new Promise((resolve, reject) => {
         new PLYLoader().load(`${base}/mesh.ply`, (g) => {
           const geo = g.index ? g.toNonIndexed() : g;
-          geo.center();
           attachTriIDs(geo);
-
           if (drawMesh) { scene.remove(drawMesh); drawMesh.geometry.dispose(); }
           drawMesh = new THREE.Mesh(geo, geomMat);
           scene.add(drawMesh);
 
+          // Compute vertex centroid as orbit target (matches desktop viewer).
+          const pos = geo.attributes.position;
+          const centroid = new THREE.Vector3();
+          for (let i = 0; i < pos.count; ++i)
+            centroid.add(new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i)));
+          centroid.divideScalar(Math.max(pos.count, 1));
+
           geo.computeBoundingSphere();
-          orbit.frameBounds(geo.boundingSphere.center, geo.boundingSphere.radius);
+          orbit.frameBounds(centroid, geo.boundingSphere.radius);
           resolve();
         }, undefined, reject);
       });
@@ -686,7 +708,7 @@
     // ================================================================
     (async () => {
       const model = await initDropdown();
-      if (!model) return;
+      if (!model) return; // user picks from dropdown → page reloads
       try { await loadScene(model); }
       catch (e) {
         console.error(e);
@@ -696,18 +718,30 @@
     })();
 
     // ================================================================
-    //  Render loop
+    //  Render loop — clear MRT per-attachment via gl.clearBufferfv
     // ================================================================
     const tmpPV = new THREE.Matrix4();
+    const clearA = new Float32Array(4);
+    const clearB = new Float32Array([0, 0, 0, 0]);
+
     function render() {
       requestAnimationFrame(render);
       if (!drawMesh) return;
 
+      // Bind MRT and clear each attachment separately.
       renderer.setRenderTarget(mrt);
-      renderer.setClearColor(scene.background, 0);
-      renderer.clear(true, true, true);
+      renderer.state.bindFramebuffer(gl.FRAMEBUFFER, renderer.properties.get(mrt).__webglFramebuffer);
+
+      // Attachment 0: doesn't matter (overwritten by post), but clear for safety.
+      clearA[0] = bgColor[0]; clearA[1] = bgColor[1]; clearA[2] = bgColor[2]; clearA[3] = 1;
+      gl.clearBufferfv(gl.COLOR, 0, clearA);
+      // Attachment 1: alpha=0 marks background.
+      gl.clearBufferfv(gl.COLOR, 1, clearB);
+      gl.clearBufferfi(gl.DEPTH_STENCIL, 0, 1.0, 0);
+
       renderer.render(scene, camera);
 
+      // Post pass.
       tmpPV.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
       postMat.uniforms.uInvPV.value.copy(tmpPV).invert();
 
