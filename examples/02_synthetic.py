@@ -502,19 +502,20 @@ def main():
 
     with torch.no_grad():
         for i, view in enumerate(test_views):
+            test_H, test_W = view.height, view.width
             mvp = torch.from_numpy(view.MVP).to(dtype=torch.float32, device=device).unsqueeze(0)
             mvp_inv = torch.inverse(mvp).contiguous()
             clip_verts = project_vertices(verts, mvp)
 
             rast_out = ds.rasterize_multires_triangle_alpha(
-                (H, W), clip_verts, faces,
+                (test_H, test_W), clip_verts, faces,
                 level=Rmax, alpha_src=alpha_acc, stochastic=False,
             )
             feat = ds.multires_triangle_color(
                 rast_out, level=Rmax, feat=feat_acc,
-            ).view(-1, H, W, feat_dim)
+            ).view(-1, test_H, test_W, feat_dim)
             feat = torch.cat([feat, ds.encode_view_dir_sh2(rast_out, mvp_inv)], dim=-1)
-            color = color_mlp.forward(feat, mask=rast_out[..., -1] > 0).view(-1, H, W, 3)
+            color = color_mlp.forward(feat, mask=rast_out[..., -1] > 0).view(-1, test_H, test_W, 3)
 
             mask = (rast_out.detach()[..., -1:] > 0).float()
             color = mask * color + (1.0 - mask)
@@ -525,13 +526,6 @@ def main():
             gt_path = str(view.file_path)
             gt_rgba = iio.imread(gt_path) / 255.0
             gt_rgba = np.ascontiguousarray(gt_rgba).astype(np.float32)
-
-            if args.downscale > 1:
-                gt_t = torch.from_numpy(gt_rgba).float().permute(2, 0, 1).unsqueeze(0)
-                gt_t = torch.nn.functional.interpolate(
-                    gt_t, size=(H, W), mode="bilinear", align_corners=False,
-                )
-                gt_rgba = gt_t.squeeze(0).permute(1, 2, 0).numpy()
 
             alpha_np = gt_rgba[..., -1:]
             gt_rgb_np = gt_rgba[..., :3] * alpha_np + (1.0 - alpha_np)
