@@ -1,0 +1,1254 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>DiffSoup – Multi-model Benchmark</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    html, body { height: 100%; margin: 0; background: #0b0b0b; }
+    #app { position: fixed; inset: 0; }
+    .overlay {
+      position: fixed;
+      left: 12px;
+      top: 12px;
+      color: #ddd;
+      font: 12px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: #111a;
+      padding: 8px 10px;
+      border-radius: 8px;
+      backdrop-filter: blur(4px);
+      pointer-events: none;
+    }
+    .overlay.error { color: #fff; background: #b00020cc; }
+
+    .bench {
+      position: fixed;
+      left: 12px;
+      bottom: 12px;
+      color: #ddd;
+      font: 12px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: #111c;
+      padding: 10px 10px;
+      border-radius: 10px;
+      backdrop-filter: blur(6px);
+      z-index: 2000;
+      width: min(360px, calc(100vw - 24px));
+    }
+    .bench h3 { margin: 0 0 6px 0; font-size: 12px; font-weight: 650; color: #e8e8e8; }
+    .bench .row { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
+    .bench label { width: 86px; color: #bbb; }
+    .bench input {
+      flex: 1;
+      background: #0b0f;
+      color: #ddd;
+      border: 1px solid #2a2a2a;
+      border-radius: 8px;
+      padding: 6px 8px;
+      outline: none;
+    }
+    .bench button {
+      background: #1d3bff;
+      color: #fff;
+      border: 0;
+      border-radius: 8px;
+      padding: 7px 10px;
+      cursor: pointer;
+      font-weight: 650;
+    }
+    .bench button.secondary { background: #2b2b2b; color: #ddd; }
+    .bench .small { font-size: 11px; color: #9aa; }
+    .bench .status { margin-top: 6px; color: #bfe; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-line; }
+  </style>
+
+  <script type="importmap">
+  { "imports": { "three": "https://unpkg.com/three@0.159.0/build/three.module.js" } }
+  </script>
+</head>
+<body>
+  <div id="app"></div>
+  <div class="overlay" id="overlay">Loading meshes + LUTs…</div>
+
+  <div class="bench" id="benchUI">
+    <h3>Benchmark (reproducible)</h3>
+    <div class="row"><label>Poses</label><input id="benchPoses" type="number" value="30" min="1" max="500" /></div>
+    <div class="row"><label>Warmup</label><input id="benchWarmup" type="number" value="30" min="0" max="600" /></div>
+    <div class="row"><label>Measure</label><input id="benchMeasure" type="number" value="120" min="1" max="2000" /></div>
+    <div class="row">
+      <button id="benchStart">Start</button>
+      <button class="secondary" id="benchStop">Stop</button>
+      <button class="secondary" id="benchExport">Export last</button>
+    </div>
+    <div class="small">Upper-hemisphere Fibonacci lattice around global bounds. Screenshots embedded into JSON.</div>
+    <div class="status" id="benchStatus">Idle</div>
+  </div>
+
+  <script type="module">
+    // ================================================================
+    //  DiffSoup – Multi-model Benchmark
+    //
+    //  Loads all scene models onto a grid and runs a deterministic
+    //  Fibonacci-lattice FPS benchmark across configurable poses.
+    //
+    //  Asset root (relative to this file in web/):
+    //    ../datasets/ours_mobile_results/<scene>/
+    //
+    //  Usage:
+    //    cd web
+    //    python3 -m http.server 8080 --bind 0.0.0.0
+    //    Open http://localhost:8080/benchmark.html
+    // ================================================================
+
+    import * as THREE from 'https://unpkg.com/three@0.159.0/build/three.module.js';
+    import { OrbitControls } from 'https://unpkg.com/three@0.159.0/examples/jsm/controls/OrbitControls.js';
+    import { PLYLoader }     from 'https://unpkg.com/three@0.159.0/examples/jsm/loaders/PLYLoader.js';
+
+    const overlay   = document.getElementById('overlay');
+    const container = document.getElementById('app');
+
+    // ================================================================
+    //  Scene configuration (paper Table X)
+    // ================================================================
+    const DATA_ROOT  = '../datasets/ours_mobile_results';
+
+    const model_list  = ["chair", "drums", "mic", "ship", "ficus", "hotdog", "lego", "materials", "fernvase", "pug", "kitten", "khady", "horse", "woolly"];
+    const model_scale = [    1.2,     1.2,   1.5,    1.5,     1.2,      1.5,    1.2,         1.2,        1.2,   2.0,      1.2,     1.2,     2.0,     2.25];
+    const GRID_SPACING = 2.0;
+    const MAX_MODELS   = 16;
+    const INPUT_DIM    = 16;
+    const HIDDEN_DIM   = 16;
+    const OUTPUT_DIM   = 3;
+
+    const BENCH_PRESERVE_DRAWING_BUFFER = false;
+
+    // ================================================================
+    //  Renderer (WebGL2 + MRT)
+    // ================================================================
+    const renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      alpha: false,
+      depth: true,
+      stencil: false,
+      powerPreference: 'high-performance',
+      preserveDrawingBuffer: BENCH_PRESERVE_DRAWING_BUFFER
+    });
+
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.autoClear = true;
+    container.appendChild(renderer.domElement);
+
+    if (!renderer.capabilities.isWebGL2) {
+      overlay.classList.add('error');
+      overlay.textContent = 'WebGL2 is required (MRT + integer attributes).';
+      throw new Error('WebGL2 not available');
+    }
+    const gl = renderer.getContext();
+    if (typeof gl.drawBuffers !== 'function') {
+      overlay.classList.add('error');
+      overlay.textContent = 'WEBGL_draw_buffers missing. MRT not supported.';
+      throw new Error('drawBuffers not available');
+    }
+
+    // ================================================================
+    //  Scene / camera / controls
+    // ================================================================
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0b0b0b);
+
+    const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 1e-2, 100.0);
+    camera.position.set(0.8, 0.6, 1.2);
+    camera.up.set(0, 0, 1);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x222233, 0.9));
+    const dir = new THREE.DirectionalLight(0xffffff, 1.0);
+    dir.position.set(2, 3, 1);
+    scene.add(dir);
+
+    // ================================================================
+    //  MRT target (COLOR0 + COLOR1 + MODEL_ID + depth)
+    // ================================================================
+    let mrt = new THREE.WebGLMultipleRenderTargets(gl.drawingBufferWidth, gl.drawingBufferHeight, 3, {
+      minFilter: THREE.NearestFilter,
+      magFilter: THREE.NearestFilter,
+      wrapS: THREE.ClampToEdgeWrapping,
+      wrapT: THREE.ClampToEdgeWrapping,
+      type: THREE.UnsignedByteType,
+      depthBuffer: true,
+      stencilBuffer: false
+    });
+    mrt.texture[0].name = 'COLOR0';
+    mrt.texture[1].name = 'COLOR1';
+    mrt.texture[2].name = 'MODEL_ID';
+
+    // ================================================================
+    //  Texture / PLY loaders
+    // ================================================================
+    const texLoader = new THREE.TextureLoader();
+    function loadNearestClamp(url) {
+      return new Promise((resolve, reject) => {
+        texLoader.load(url, (t) => {
+          t.flipY = false;
+          t.generateMipmaps = false;
+          t.minFilter = THREE.NearestFilter;
+          t.magFilter = THREE.NearestFilter;
+          t.wrapS = THREE.ClampToEdgeWrapping;
+          t.wrapT = THREE.ClampToEdgeWrapping;
+          resolve(t);
+        }, undefined, reject);
+      });
+    }
+
+    async function loadMLPJSON(url) {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Failed to fetch MLP weights: ${url}`);
+      return await res.json();
+    }
+
+    const plyLoader = new PLYLoader();
+
+    // ================================================================
+    //  Geometry-pass shaders
+    // ================================================================
+    const geomVertexShader = /* glsl */`
+      in vec3 position;
+      in uint aTriID;
+
+      uniform mat4 projectionMatrix;
+      uniform mat4 modelViewMatrix;
+
+      flat out uint vTriID;
+      out vec3 vBary;
+
+      void main() {
+        vTriID = aTriID;
+        int corner = gl_VertexID % 3;
+        vBary = (corner == 0) ? vec3(1.0, 0.0, 0.0) :
+               (corner == 1) ? vec3(0.0, 1.0, 0.0) :
+                                vec3(0.0, 0.0, 1.0);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `;
+
+    const geomFragmentShader = /* glsl */`
+      precision highp float;
+      precision highp int;
+      precision highp sampler2D;
+
+      flat in uint vTriID;
+      in vec3 vBary;
+
+      layout(location = 0) out vec4 FragA;
+      layout(location = 1) out vec4 FragB;
+      layout(location = 2) out vec4 FragID;
+
+      uniform ivec2     uTriTexSize;
+      uniform sampler2D uTriTex0;
+      uniform sampler2D uTriTex1;
+      uniform int       uLevel;
+      uniform int       uModelID;
+
+      ivec2 idx_to_coord(int idx, int texW) {
+        return ivec2(idx % texW, idx / texW);
+      }
+      int level_size(int L) {
+        if (L == 0) return 3;
+        int a = (1 << (L - 1)) + 1;
+        int b = (1 << L) + 1;
+        return a * b;
+      }
+
+      void main() {
+        int texW = uTriTexSize.x;
+        int texH = uTriTexSize.y;
+        int cap  = texW * texH;
+        if (cap <= 0) {
+          FragA = vec4(1.0, 0.0, 1.0, 1.0);
+          FragB = FragA;
+          FragID = vec4(0.0, 0.0, 0.0, 1.0);
+          return;
+        }
+
+        int S    = level_size(uLevel);
+        int base = int(vTriID) * S;
+
+        float b0 = vBary.x;
+        float b1 = vBary.y;
+
+        int   res   = 1 << uLevel;
+        float res_f = float(res);
+
+        float b0l = b0 * res_f;
+        float b1l = b1 * res_f;
+
+        int x = int(floor(b0l));
+        int y = int(floor(b1l));
+        x = clamp(x, 0, res - 1);
+        y = clamp(y, 0, (res - 1) - x);
+
+        b0l -= float(x);
+        b1l -= float(y);
+
+        bool  flip   = (b0l + b1l) > 1.0;
+        int   flip_u = flip ? 1 : 0;
+        float flip_f = flip ? 1.0 : 0.0;
+
+        int x0 = x + 1;
+        int y0 = y;
+        int x1 = x;
+        int y1 = y + 1;
+        int x2 = x + flip_u;
+        int y2 = min(y + flip_u, res - x2);
+
+        int idx0 = (x0 + y0) * (x0 + y0 + 1) / 2 + y0;
+        int idx1 = (x1 + y1) * (x1 + y1 + 1) / 2 + y1;
+        int idx2 = (x2 + y2) * (x2 + y2 + 1) / 2 + y2;
+
+        float w0 = mix(b0l, 1.0 - b1l, flip_f);
+        float w1 = mix(b1l, 1.0 - b0l, flip_f);
+        float w2 = 1.0 - w0 - w1;
+
+        int i0 = base + idx0;
+        int i1 = base + idx1;
+        int i2 = base + idx2;
+
+        ivec2 c0 = idx_to_coord(i0, texW);
+        ivec2 c1 = idx_to_coord(i1, texW);
+        ivec2 c2 = idx_to_coord(i2, texW);
+
+        vec4 a0 = texelFetch(uTriTex0, c0, 0);
+        vec4 a1 = texelFetch(uTriTex0, c1, 0);
+        vec4 a2 = texelFetch(uTriTex0, c2, 0);
+
+        vec4 b0s = texelFetch(uTriTex1, c0, 0);
+        vec4 b1s = texelFetch(uTriTex1, c1, 0);
+        vec4 b2s = texelFetch(uTriTex1, c2, 0);
+
+        vec4 interpA = a0 * w0 + a1 * w1 + a2 * w2;
+        vec4 interpB = b0s * w0 + b1s * w1 + b2s * w2;
+
+        if (interpB.a < 0.5) discard;
+
+        FragA = interpA;
+        FragB = vec4(interpB.rgb, 0.5);
+
+        float modelIDNorm = clamp(float(uModelID) / 255.0, 0.0, 1.0);
+        FragID = vec4(modelIDNorm, 0.0, 0.0, 1.0);
+      }
+    `;
+
+    // ================================================================
+    //  Geometry material factory
+    // ================================================================
+    const geomUniformsTemplate = {
+      uTriTex0:    { value: null },
+      uTriTex1:    { value: null },
+      uTriTexSize: { value: new THREE.Vector2(1, 1) },
+      uLevel:      { value: 5 },
+      uModelID:    { value: 0 }
+    };
+
+    function createGeomMaterial() {
+      return new THREE.RawShaderMaterial({
+        glslVersion: THREE.GLSL3,
+        uniforms: THREE.UniformsUtils.clone(geomUniformsTemplate),
+        vertexShader: geomVertexShader,
+        fragmentShader: geomFragmentShader,
+        depthTest: true,
+        depthWrite: true,
+        side: THREE.DoubleSide
+      });
+    }
+
+    // ================================================================
+    //  Post-composite pass (per-model MLP via weight textures)
+    // ================================================================
+    const postScene = new THREE.Scene();
+    const postCam   = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+    const postMat = new THREE.RawShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      uniforms: {
+        texA:       { value: mrt.texture[0] },
+        texB:       { value: mrt.texture[1] },
+        texID:      { value: mrt.texture[2] },
+        uInvPV:     { value: new THREE.Matrix4() },
+        uNumModels: { value: 1 },
+        W1Tex: { value: null },
+        B1Tex: { value: null },
+        W2Tex: { value: null },
+        B2Tex: { value: null },
+        W3Tex: { value: null },
+        B3Tex: { value: null }
+      },
+      vertexShader: /* glsl */`
+        in vec3 position;
+        in vec2 uv;
+        out vec2 vUV;
+        void main() {
+          gl_Position = vec4(position.xy, 0.0, 1.0);
+          vec2 t = 0.5 * (gl_Position.xy + vec2(1.0));
+          vUV = vec2(t.x, t.y);
+        }
+      `,
+      fragmentShader: /* glsl */`
+        precision highp float;
+        precision highp sampler2D;
+
+        in vec2 vUV;
+        out vec4 FragColor;
+
+        uniform sampler2D texA;
+        uniform sampler2D texB;
+        uniform sampler2D texID;
+        uniform mat4 uInvPV;
+        uniform int uNumModels;
+
+        uniform sampler2D W1Tex;
+        uniform sampler2D B1Tex;
+        uniform sampler2D W2Tex;
+        uniform sampler2D B2Tex;
+        uniform sampler2D W3Tex;
+        uniform sampler2D B3Tex;
+
+        const int INPUT_DIM  = int(${INPUT_DIM});
+        const int HIDDEN_DIM = int(${HIDDEN_DIM});
+        const int OUTPUT_DIM = int(${OUTPUT_DIM});
+
+        vec3 ndcToWorld(vec4 ndc, mat4 invPV){
+          vec4 clip = invPV * ndc;
+          float inv_w = (abs(clip.w) > 1e-20) ? (1.0 / clip.w) : 0.0;
+          return clip.xyz * inv_w;
+        }
+
+        const float SH_C0    = 0.28209479177387814;
+        const float SH_C1    = 0.4886025119029199;
+        const float SH_C2_0  = 1.0925484305920792;
+        const float SH_C2_1  = -1.0925484305920792;
+        const float SH_C2_2  = 0.31539156525252005;
+        const float SH_C2_3  = -1.0925484305920792;
+        const float SH_C2_4  = 0.5462742152960396;
+
+        void eval_sh2(in vec3 d, out float sh[9]) {
+          float x = d.x;
+          float y = d.y;
+          float z = d.z;
+
+          sh[0] = SH_C0;
+          sh[1] = -SH_C1 * y;
+          sh[2] =  SH_C1 * z;
+          sh[3] = -SH_C1 * x;
+
+          float xx = x * x, yy = y * y, zz = z * z;
+          float xy = x * y, xz = x * z, yz = y * z;
+
+          sh[4] = SH_C2_0 * xy;
+          sh[5] = SH_C2_1 * yz;
+          sh[6] = SH_C2_2 * (2.0 * zz - xx - yy);
+          sh[7] = SH_C2_3 * xz;
+          sh[8] = SH_C2_4 * (xx - yy);
+        }
+
+        void main() {
+          vec4 A = texture(texA, vUV);
+          vec4 B = texture(texB, vUV);
+          vec4 IDSample = texture(texID, vUV);
+
+          if (B.a == 1.0) {
+            FragColor = vec4(1.0);
+            return;
+          }
+
+          float modelIDNorm = IDSample.r;
+          int modelID = int(floor(modelIDNorm * 255.0 + 0.5));
+          modelID = clamp(modelID, 0, max(uNumModels - 1, 0));
+
+          float ndc_x = -1.0 + 2.0 * vUV.x;
+          float ndc_y = -1.0 + 2.0 * vUV.y;
+
+          vec3 world_near = ndcToWorld(vec4(ndc_x, ndc_y, -1.0, 1.0), uInvPV);
+          vec3 world_far  = ndcToWorld(vec4(ndc_x, ndc_y,  1.0, 1.0), uInvPV);
+          vec3 v = normalize(world_near - world_far);
+
+          float sh[9];
+          eval_sh2(v, sh);
+
+          // 16-dim input: LUT channels (7) + SH2 basis (9)
+          float x[INPUT_DIM];
+          x[0]  = A.r;
+          x[1]  = A.g;
+          x[2]  = A.b;
+          x[3]  = A.a;
+          x[4]  = B.r;
+          x[5]  = B.g;
+          x[6]  = B.b;
+          x[7]  = sh[0];
+          x[8]  = sh[1];
+          x[9]  = sh[2];
+          x[10] = sh[3];
+          x[11] = sh[4];
+          x[12] = sh[5];
+          x[13] = sh[6];
+          x[14] = sh[7];
+          x[15] = sh[8];
+
+          // Layer 1: input (16) -> hidden (16), ReLU
+          float h1[HIDDEN_DIM];
+          for (int r = 0; r < HIDDEN_DIM; ++r) {
+            float sum = 0.0;
+            int y = modelID * HIDDEN_DIM + r;
+            for (int c = 0; c < INPUT_DIM; ++c) {
+              float w = texelFetch(W1Tex, ivec2(c, y), 0).r;
+              sum += w * x[c];
+            }
+            float b = texelFetch(B1Tex, ivec2(r, modelID), 0).r;
+            float v1 = sum + b;
+            h1[r] = max(v1, 0.0);
+          }
+
+          // Layer 2: hidden (16) -> hidden (16), ReLU
+          float h2[HIDDEN_DIM];
+          for (int r = 0; r < HIDDEN_DIM; ++r) {
+            float sum = 0.0;
+            int y = modelID * HIDDEN_DIM + r;
+            for (int c = 0; c < HIDDEN_DIM; ++c) {
+              float w = texelFetch(W2Tex, ivec2(c, y), 0).r;
+              sum += w * h1[c];
+            }
+            float b = texelFetch(B2Tex, ivec2(r, modelID), 0).r;
+            float v2 = sum + b;
+            h2[r] = max(v2, 0.0);
+          }
+
+          // Output layer: hidden (16) -> RGB (3), sigmoid
+          float outF[OUTPUT_DIM];
+          for (int r = 0; r < OUTPUT_DIM; ++r) {
+            float sum = 0.0;
+            int y = modelID * OUTPUT_DIM + r;
+            for (int c = 0; c < HIDDEN_DIM; ++c) {
+              float w = texelFetch(W3Tex, ivec2(c, y), 0).r;
+              sum += w * h2[c];
+            }
+            float b = texelFetch(B3Tex, ivec2(r, modelID), 0).r;
+            outF[r] = sum + b;
+          }
+
+          vec3 mlp = vec3(
+            1.0 / (1.0 + exp(-outF[0])),
+            1.0 / (1.0 + exp(-outF[1])),
+            1.0 / (1.0 + exp(-outF[2]))
+          );
+
+          float residual = A.a;
+          vec3  albedo   = A.rgb;
+          vec3 out3 = mix(albedo, mlp, residual);
+
+          FragColor = vec4(out3, 1.0);
+        }
+      `,
+      depthTest: false,
+      depthWrite: false
+    });
+    postScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), postMat));
+
+    // ================================================================
+    //  Mesh helpers
+    // ================================================================
+    const meshes = [];
+
+    function makeTriIDs(geo) {
+      const triCount = (geo.attributes.position.count / 3) | 0;
+      const triID = new Uint32Array(triCount * 3);
+      for (let f = 0; f < triCount; ++f) {
+        triID[3 * f + 0] = f;
+        triID[3 * f + 1] = f;
+        triID[3 * f + 2] = f;
+      }
+      geo.setAttribute('aTriID', new THREE.Uint32BufferAttribute(triID, 1));
+    }
+
+    function frameToBoundsFromMeshes(meshes) {
+      if (!meshes.length) return;
+      const box = new THREE.Box3();
+      for (const mesh of meshes) {
+        mesh.updateMatrixWorld(true);
+        box.expandByObject(mesh);
+      }
+      if (!isFinite(box.min.x) || !isFinite(box.max.x)) return;
+
+      const center   = box.getCenter(new THREE.Vector3());
+      const size     = box.getSize(new THREE.Vector3());
+      const maxSize  = Math.max(size.x, size.y, size.z);
+      const halfSize = maxSize * 0.5;
+      const dist     = halfSize / Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5));
+
+      const dirv = new THREE.Vector3(1, 0.6, 1).normalize();
+      camera.position.copy(center).addScaledVector(dirv, dist);
+      controls.target.copy(center);
+      controls.update();
+    }
+
+    // ================================================================
+    //  FPS counter
+    // ================================================================
+    const fpsBox = document.createElement('div');
+    Object.assign(fpsBox.style, {
+      position: 'fixed',
+      right: '10px',
+      top: '10px',
+      color: '#8f8',
+      font: '12px monospace',
+      background: '#020a',
+      padding: '4px 6px',
+      borderRadius: '6px',
+      zIndex: 1000
+    });
+    document.body.appendChild(fpsBox);
+    let lastTime = performance.now(), frames = 0;
+    function updateFPS() {
+      const now = performance.now();
+      frames++;
+      if (now - lastTime > 1000) {
+        const fps = (frames * 1000) / (now - lastTime);
+        fpsBox.textContent = `${fps.toFixed(1)} fps`;
+        lastTime = now; frames = 0;
+      }
+    }
+
+    // ================================================================
+    //  GPU memory surrogate (texture + mesh buffer byte estimates)
+    // ================================================================
+    function tick() { return new Promise(r => setTimeout(r, 0)); }
+
+    function fmtBytes(bytes) {
+      if (!isFinite(bytes)) return 'n/a';
+      const units = ['B','KB','MB','GB'];
+      let b = bytes, u = 0;
+      while (b >= 1024 && u < units.length - 1) { b /= 1024; u++; }
+      return `${b.toFixed(u === 0 ? 0 : 2)} ${units[u]}`;
+    }
+
+    function estimateTextureBytes(tex) {
+      try {
+        const img = tex?.image;
+        if (!img) return 0;
+        const w = img.width || img.videoWidth || 0;
+        const h = img.height || img.videoHeight || 0;
+        if (!w || !h) return 0;
+        return w * h * 4;
+      } catch { return 0; }
+    }
+
+    function estimateGeometryBytes(geom) {
+      if (!geom) return 0;
+      let bytes = 0;
+      const attrs = geom.attributes || {};
+      for (const k of Object.keys(attrs)) {
+        const a = attrs[k];
+        const arr = a?.array;
+        if (arr && arr.byteLength) bytes += arr.byteLength;
+      }
+      const idx = geom.index;
+      if (idx?.array?.byteLength) bytes += idx.array.byteLength;
+      return bytes;
+    }
+
+    function estimateDataTextureBytes(tex) {
+      try {
+        const img = tex?.image;
+        const data = img?.data;
+        if (data && data.byteLength) return data.byteLength;
+      } catch {}
+      return 0;
+    }
+
+    const GpuBytes = {
+      perModel: [],
+      weights: { texBytes: 0 },
+      totals: { texBytes: 0, geomBytes: 0, totalBytes: 0 },
+
+      addModel(name, texBytes, geomBytes) {
+        const totalBytes = texBytes + geomBytes;
+        this.perModel.push({ name, texBytes, geomBytes, totalBytes });
+        this.totals.texBytes += texBytes;
+        this.totals.geomBytes += geomBytes;
+        this.totals.totalBytes += totalBytes;
+      },
+
+      addWeights(bytes) {
+        this.weights.texBytes = bytes;
+        this.totals.texBytes += bytes;
+        this.totals.totalBytes += bytes;
+      }
+    };
+
+    const benchStatus = document.getElementById('benchStatus');
+    function benchStatusSetWithGpuLine(line0) {
+      const gpuLine =
+        `GPU~ tex ${fmtBytes(GpuBytes.totals.texBytes)} + mesh ${fmtBytes(GpuBytes.totals.geomBytes)} = ${fmtBytes(GpuBytes.totals.totalBytes)}` +
+        (GpuBytes.weights.texBytes ? ` (weights ${fmtBytes(GpuBytes.weights.texBytes)})` : '');
+      benchStatus.textContent = `${line0}\n${gpuLine}`;
+    }
+
+    // ================================================================
+    //  Model loading
+    // ================================================================
+    async function loadModel(name, modelIndex) {
+      const base = `${DATA_ROOT}/${name}`;
+
+      const tri0 = await loadNearestClamp(`${base}/tri_lut0.png`);
+      await tick();
+      const tri1 = await loadNearestClamp(`${base}/tri_lut1.png`);
+      await tick();
+
+      const geometry = await new Promise((resolve, reject) => {
+        plyLoader.load(`${base}/soup.ply`, (g) => {
+          const geo = g.index ? g.toNonIndexed() : g;
+          if (!geo.getAttribute('normal')) geo.computeVertexNormals();
+          geo.center();
+          makeTriIDs(geo);
+          resolve(geo);
+        }, undefined, (e) => reject(e));
+      });
+      await tick();
+
+      const mat = createGeomMaterial();
+      mat.uniforms.uTriTex0.value = tri0;
+      mat.uniforms.uTriTex1.value = tri1;
+      mat.uniforms.uTriTexSize.value.set(tri0.image.width | 0, tri0.image.height | 0);
+      mat.uniforms.uModelID.value = modelIndex;
+
+      const mesh = new THREE.Mesh(geometry, mat);
+      scene.add(mesh);
+
+      const texBytes  = estimateTextureBytes(tri0) + estimateTextureBytes(tri1);
+      const geomBytes = estimateGeometryBytes(geometry);
+      GpuBytes.addModel(name, texBytes, geomBytes);
+
+      return mesh;
+    }
+
+    // ================================================================
+    //  Grid layout
+    // ================================================================
+    function layoutMeshesInGrid() {
+      const n = meshes.length;
+      if (!n) return;
+      const cols = Math.ceil(Math.sqrt(n));
+      const rows = Math.ceil(n / cols);
+
+      for (let i = 0; i < n; ++i) {
+        const mesh = meshes[i];
+        const row = Math.floor(i / cols);
+        const col = i % cols;
+
+        const offsetX = (col - (cols - 1) * 0.5) * GRID_SPACING;
+        const offsetY = (row - (rows - 1) * 0.5) * GRID_SPACING;
+
+        mesh.scale.setScalar(1.0 / model_scale[i]);
+        mesh.position.set(offsetX, offsetY, 0.0);
+      }
+    }
+
+    // ================================================================
+    //  Weight textures (all models packed into DataTextures)
+    // ================================================================
+    function buildWeightTextures(mlps, numModels) {
+      const W1Width  = INPUT_DIM;
+      const W1Height = HIDDEN_DIM * numModels;
+      const W1Array  = new Float32Array(W1Width * W1Height);
+
+      const B1Width  = HIDDEN_DIM;
+      const B1Height = numModels;
+      const B1Array  = new Float32Array(B1Width * B1Height);
+
+      const W2Width  = HIDDEN_DIM;
+      const W2Height = HIDDEN_DIM * numModels;
+      const W2Array  = new Float32Array(W2Width * W2Height);
+
+      const B2Width  = HIDDEN_DIM;
+      const B2Height = numModels;
+      const B2Array  = new Float32Array(B2Width * B2Height);
+
+      const W3Width  = HIDDEN_DIM;
+      const W3Height = OUTPUT_DIM * numModels;
+      const W3Array  = new Float32Array(W3Width * W3Height);
+
+      const B3Width  = OUTPUT_DIM;
+      const B3Height = numModels;
+      const B3Array  = new Float32Array(B3Width * B3Height);
+
+      for (let m = 0; m < numModels; ++m) {
+        const j = mlps[m];
+
+        for (let r = 0; r < HIDDEN_DIM; ++r) {
+          for (let c = 0; c < INPUT_DIM; ++c) {
+            const srcIdx = r * INPUT_DIM + c;
+            const y = m * HIDDEN_DIM + r;
+            const dstIdx = y * W1Width + c;
+            W1Array[dstIdx] = j.W1[srcIdx];
+          }
+        }
+
+        for (let r = 0; r < HIDDEN_DIM; ++r) {
+          B1Array[m * B1Width + r] = j.b1[r] ?? 0.0;
+        }
+
+        for (let r = 0; r < HIDDEN_DIM; ++r) {
+          for (let c = 0; c < HIDDEN_DIM; ++c) {
+            const srcIdx = r * HIDDEN_DIM + c;
+            const y = m * HIDDEN_DIM + r;
+            const dstIdx = y * W2Width + c;
+            W2Array[dstIdx] = j.W2[srcIdx];
+          }
+        }
+
+        for (let r = 0; r < HIDDEN_DIM; ++r) {
+          B2Array[m * B2Width + r] = j.b2[r] ?? 0.0;
+        }
+
+        for (let r = 0; r < OUTPUT_DIM; ++r) {
+          for (let c = 0; c < HIDDEN_DIM; ++c) {
+            const srcIdx = r * HIDDEN_DIM + c;
+            const y = m * OUTPUT_DIM + r;
+            const dstIdx = y * W3Width + c;
+            W3Array[dstIdx] = j.W3[srcIdx];
+          }
+        }
+
+        for (let r = 0; r < OUTPUT_DIM; ++r) {
+          B3Array[m * B3Width + r] = (j.b3 && j.b3[r] != null) ? j.b3[r] : 0.0;
+        }
+      }
+
+      function makeFloatTexture(width, height, data) {
+        const tex = new THREE.DataTexture(data, width, height, THREE.RedFormat, THREE.FloatType);
+        tex.needsUpdate = true;
+        tex.flipY = false;
+        tex.generateMipmaps = false;
+        tex.minFilter = THREE.NearestFilter;
+        tex.magFilter = THREE.NearestFilter;
+        tex.wrapS = THREE.ClampToEdgeWrapping;
+        tex.wrapT = THREE.ClampToEdgeWrapping;
+        return tex;
+      }
+
+      return {
+        W1Tex: makeFloatTexture(W1Width, W1Height, W1Array),
+        B1Tex: makeFloatTexture(B1Width, B1Height, B1Array),
+        W2Tex: makeFloatTexture(W2Width, W2Height, W2Array),
+        B2Tex: makeFloatTexture(B2Width, B2Height, B2Array),
+        W3Tex: makeFloatTexture(W3Width, W3Height, W3Array),
+        B3Tex: makeFloatTexture(B3Width, B3Height, B3Array)
+      };
+    }
+
+    // ================================================================
+    //  Sequential load (meshes → LUTs → MLP weights)
+    // ================================================================
+    async function loadAll() {
+      const numModels = Math.min(model_list.length, MAX_MODELS);
+
+      meshes.length = 0;
+      for (let i = 0; i < numModels; i++) {
+        const name = model_list[i];
+        overlay.textContent = `Loading ${i + 1}/${numModels}: ${name} …`;
+        const mesh = await loadModel(name, i);
+        meshes.push(mesh);
+        layoutMeshesInGrid();
+        benchStatusSetWithGpuLine(`Loaded ${i + 1}/${numModels}: ${name}`);
+        await tick();
+      }
+
+      layoutMeshesInGrid();
+      frameToBoundsFromMeshes(meshes);
+
+      const mlps = [];
+      for (let i = 0; i < numModels; i++) {
+        const name = model_list[i];
+        overlay.textContent = `Loading MLP ${i + 1}/${numModels}: ${name} …`;
+        const j = await loadMLPJSON(`${DATA_ROOT}/${name}/mlp_weights.json`);
+        mlps.push(j);
+        await tick();
+      }
+
+      overlay.textContent = 'Building weight textures…';
+      const wtex = buildWeightTextures(mlps, numModels);
+      postMat.uniforms.W1Tex.value = wtex.W1Tex;
+      postMat.uniforms.B1Tex.value = wtex.B1Tex;
+      postMat.uniforms.W2Tex.value = wtex.W2Tex;
+      postMat.uniforms.B2Tex.value = wtex.B2Tex;
+      postMat.uniforms.W3Tex.value = wtex.W3Tex;
+      postMat.uniforms.B3Tex.value = wtex.B3Tex;
+      postMat.uniforms.uNumModels.value = numModels;
+      postMat.needsUpdate = true;
+
+      const weightBytes =
+        estimateDataTextureBytes(wtex.W1Tex) +
+        estimateDataTextureBytes(wtex.B1Tex) +
+        estimateDataTextureBytes(wtex.W2Tex) +
+        estimateDataTextureBytes(wtex.B2Tex) +
+        estimateDataTextureBytes(wtex.W3Tex) +
+        estimateDataTextureBytes(wtex.B3Tex);
+      GpuBytes.addWeights(weightBytes);
+
+      overlay.textContent = 'Loaded ✓';
+      setTimeout(() => overlay.remove(), 800);
+      benchStatusSetWithGpuLine('Idle');
+    }
+
+    loadAll().catch((e) => {
+      console.error(e);
+      overlay.classList.add('error');
+      overlay.textContent = 'Failed to load meshes/LUTs/MLPs';
+      benchStatusSetWithGpuLine('Load FAILED (see console)');
+    });
+
+    // ================================================================
+    //  Benchmark: Fibonacci-lattice camera poses + measurement
+    // ================================================================
+    const inpPoses   = document.getElementById('benchPoses');
+    const inpWarmup  = document.getElementById('benchWarmup');
+    const inpMeasure = document.getElementById('benchMeasure');
+    const btnStart   = document.getElementById('benchStart');
+    const btnStop    = document.getElementById('benchStop');
+    const btnExport  = document.getElementById('benchExport');
+
+    function computeGlobalBounds(meshes) {
+      const box = new THREE.Box3();
+      for (const m of meshes) {
+        m.updateMatrixWorld(true);
+        box.expandByObject(m);
+      }
+      return box;
+    }
+
+    // Upper-hemisphere Fibonacci lattice (z >= 0), deterministic.
+    function fibonacciUpperHemisphereDirs(n) {
+      const dirs = [];
+      const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+      for (let i = 0; i < n; i++) {
+        const t = (i + 0.5) / n;
+        const z = t;
+        const r = Math.sqrt(Math.max(0, 1 - z * z));
+        const theta = i * goldenAngle;
+        const x = r * Math.cos(theta);
+        const y = r * Math.sin(theta);
+        dirs.push(new THREE.Vector3(x, y, z).normalize());
+      }
+      return dirs;
+    }
+
+    function applyBenchPose(center, camPos) {
+      camera.position.copy(camPos);
+      camera.up.set(0, 0, 1);
+      camera.lookAt(center);
+      camera.updateMatrixWorld(true);
+      controls.target.copy(center);
+      controls.update();
+    }
+
+    function capturePngDataUrl() {
+      return renderer.domElement.toDataURL('image/png');
+    }
+
+    function exportJson(payload, filenameBase = 'benchmark') {
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${filenameBase}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    const Bench = {
+      active: false,
+      done: false,
+      lastPayload: null,
+
+      poses: [],
+      poseIndex: 0,
+      warmupLeft: 0,
+      measureLeft: 0,
+      measureTotal: 0,
+      tStart: 0,
+      tEnd: 0,
+
+      center: new THREE.Vector3(),
+      distBase: 1.0,
+
+      results: [],
+      savedControls: null,
+
+      start({ numPoses, warmupFrames, measureFrames }) {
+        if (!meshes.length) {
+          benchStatusSetWithGpuLine('Meshes not loaded yet.');
+          return;
+        }
+
+        this.savedControls = {
+          enabled: controls.enabled,
+          enableDamping: controls.enableDamping
+        };
+        controls.enabled = false;
+        controls.enableDamping = false;
+
+        const box = computeGlobalBounds(meshes);
+        if (!isFinite(box.min.x) || !isFinite(box.max.x)) {
+          benchStatusSetWithGpuLine('Invalid bounds.');
+          return;
+        }
+
+        const center = box.getCenter(new THREE.Vector3());
+        const size   = box.getSize(new THREE.Vector3());
+        const radius = 0.5 * Math.max(size.x, size.y, size.z);
+
+        const fovRad  = THREE.MathUtils.degToRad(camera.fov);
+        const distFit = radius / Math.tan(0.5 * fovRad);
+
+        this.distBase = distFit;
+        this.center.copy(center);
+
+        const dirs = fibonacciUpperHemisphereDirs(numPoses);
+        this.poses = dirs.map((d) => {
+          const dist = Math.max(1e-6, this.distBase);
+          return center.clone().addScaledVector(d, dist);
+        });
+
+        this.poseIndex    = 0;
+        this.warmupLeft   = warmupFrames | 0;
+        this.measureLeft  = measureFrames | 0;
+        this.measureTotal = measureFrames | 0;
+        this.tStart       = 0;
+        this.tEnd         = 0;
+        this.results      = [];
+        this.done         = false;
+        this.active       = true;
+
+        applyBenchPose(this.center, this.poses[this.poseIndex]);
+        benchStatusSetWithGpuLine(`Running… pose 1/${this.poses.length} (warmup ${this.warmupLeft}, measure ${this.measureLeft})`);
+      },
+
+      stop() {
+        if (!this.active) return;
+        this.active = false;
+        this.done = false;
+        this._restoreControls();
+        benchStatusSetWithGpuLine('Stopped.');
+      },
+
+      _restoreControls() {
+        if (this.savedControls) {
+          controls.enabled = this.savedControls.enabled;
+          controls.enableDamping = this.savedControls.enableDamping;
+          this.savedControls = null;
+        } else {
+          controls.enabled = true;
+        }
+      },
+
+      onFrame(nowMs) {
+        if (!this.active || this.done) return;
+
+        if (this.warmupLeft > 0) {
+          this.warmupLeft--;
+          benchStatusSetWithGpuLine(
+            `Running… pose ${this.poseIndex + 1}/${this.poses.length} (warmup ${this.warmupLeft}, measure ${this.measureLeft})`
+          );
+          return;
+        }
+
+        if (this.measureLeft === this.measureTotal) {
+          this.tStart = nowMs;
+        }
+
+        this.measureLeft--;
+        if (this.measureLeft > 0) {
+          benchStatusSetWithGpuLine(
+            `Running… pose ${this.poseIndex + 1}/${this.poses.length} (measure ${this.measureLeft}/${this.measureTotal})`
+          );
+          return;
+        }
+
+        this.tEnd = nowMs;
+        const dtSec = Math.max(1e-6, (this.tEnd - this.tStart) / 1000);
+        const fps = this.measureTotal / dtSec;
+
+        let screenshot = null;
+        try { screenshot = capturePngDataUrl(); }
+        catch (e) { screenshot = null; console.warn('Screenshot capture failed:', e); }
+
+        const view = camera.matrixWorldInverse.clone();
+        const proj = camera.projectionMatrix.clone();
+
+        this.results.push({
+          poseIndex: this.poseIndex,
+          fps,
+          seconds: dtSec,
+          cameraPosition: camera.position.toArray(),
+          cameraTarget: controls.target.toArray(),
+          viewMatrix: view.elements.slice(),
+          projMatrix: proj.elements.slice(),
+          screenshotPngDataUrl: screenshot
+        });
+
+        this.poseIndex++;
+        if (this.poseIndex >= this.poses.length) {
+          this.done   = true;
+          this.active = false;
+          this._restoreControls();
+
+          const payload = {
+            timestamp: new Date().toISOString(),
+            methodTag: 'diffsoup',
+            userAgent: navigator.userAgent,
+            devicePixelRatio: devicePixelRatio,
+            viewport: { w: innerWidth, h: innerHeight },
+            renderer: {
+              preserveDrawingBuffer: BENCH_PRESERVE_DRAWING_BUFFER,
+              antialias: renderer.getContextAttributes()?.antialias ?? null
+            },
+            sceneBounds: {
+              center: this.center.toArray(),
+              distBase: this.distBase,
+            },
+            warmupFrames: this.warmupLeft,
+            measureFrames: this.measureTotal,
+            numPoses: this.results.length,
+            gpuSurrogate: {
+              totalsBytes: { ...GpuBytes.totals },
+              weightsBytes: GpuBytes.weights.texBytes,
+              perModelBytes: GpuBytes.perModel.slice()
+            },
+            scene: {
+              model_list,
+              model_scale,
+              GRID_SPACING,
+              models: meshes.map((m, i) => ({
+                index: i,
+                name: model_list[i],
+                scaleScalar: m.scale.x,
+                position: m.position.toArray(),
+                rotation: m.rotation.toArray()
+              })),
+              camera: {
+                fov: camera.fov,
+                near: camera.near,
+                far: camera.far,
+                up: camera.up.toArray()
+              },
+              poseGen: {
+                type: "fibonacci_upper_hemisphere",
+                numPoses: this.poses.length,
+                distBase: this.distBase,
+                center: this.center.toArray()
+              }
+            },
+            results: this.results
+          };
+
+          this.lastPayload = payload;
+          exportJson(payload, `benchmark_${payload.methodTag}_${payload.numPoses}poses`);
+
+          const avg = payload.results.reduce((a, r) => a + r.fps, 0) / Math.max(1, payload.results.length);
+          benchStatusSetWithGpuLine(`Done ✓ avg ${avg.toFixed(2)} fps (exported JSON)`);
+          return;
+        }
+
+        const warmupFrames  = parseInt(inpWarmup.value, 10) | 0;
+        const measureFrames = parseInt(inpMeasure.value, 10) | 0;
+
+        this.warmupLeft   = Math.max(0, warmupFrames);
+        this.measureTotal = Math.max(1, measureFrames);
+        this.measureLeft  = this.measureTotal;
+
+        applyBenchPose(this.center, this.poses[this.poseIndex]);
+        benchStatusSetWithGpuLine(
+          `Running… pose ${this.poseIndex + 1}/${this.poses.length} (warmup ${this.warmupLeft}, measure ${this.measureLeft})`
+        );
+      }
+    };
+
+    btnStart.addEventListener('click', () => {
+      const numPoses     = Math.max(1, Math.min(500, parseInt(inpPoses.value, 10) | 0));
+      const warmupFrames = Math.max(0, parseInt(inpWarmup.value, 10) | 0);
+      const measureFrames = Math.max(1, parseInt(inpMeasure.value, 10) | 0);
+      Bench.start({ numPoses, warmupFrames, measureFrames });
+    });
+
+    btnStop.addEventListener('click', () => Bench.stop());
+
+    btnExport.addEventListener('click', () => {
+      if (!Bench.lastPayload) {
+        benchStatusSetWithGpuLine('No previous run to export.');
+        return;
+      }
+      exportJson(Bench.lastPayload, `benchmark_${Bench.lastPayload.methodTag}_${Bench.lastPayload.numPoses}poses_reexport`);
+      benchStatusSetWithGpuLine('Exported last run JSON.');
+    });
+
+    addEventListener('keydown', (e) => {
+      if (e.key === 'b' || e.key === 'B') btnStart.click();
+    });
+
+    // ================================================================
+    //  Render loop
+    // ================================================================
+    const tmpPV = new THREE.Matrix4();
+    function render(nowMs) {
+      requestAnimationFrame(render);
+
+      controls.update();
+
+      if (meshes.length > 0) {
+        renderer.setRenderTarget(mrt);
+        renderer.setClearColor(scene.background);
+        renderer.clear(true, true, true);
+        renderer.render(scene, camera);
+
+        tmpPV.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+        postMat.uniforms.uInvPV.value.copy(tmpPV).invert();
+
+        renderer.setRenderTarget(null);
+        renderer.setClearColor(0x000000);
+        renderer.clear(true, false, false);
+        renderer.render(postScene, postCam);
+      }
+
+      updateFPS();
+      Bench.onFrame(nowMs ?? performance.now());
+    }
+    render();
+
+    // ================================================================
+    //  Resize
+    // ================================================================
+    addEventListener('resize', () => {
+      const w = innerWidth, h = innerHeight;
+
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setSize(w, h);
+
+      mrt.dispose();
+      mrt = new THREE.WebGLMultipleRenderTargets(gl.drawingBufferWidth, gl.drawingBufferHeight, 3, {
+        minFilter: THREE.NearestFilter,
+        magFilter: THREE.NearestFilter,
+        wrapS: THREE.ClampToEdgeWrapping,
+        wrapT: THREE.ClampToEdgeWrapping,
+        type: THREE.UnsignedByteType,
+        depthBuffer: true,
+        stencilBuffer: false
+      });
+      postMat.uniforms.texA.value  = mrt.texture[0];
+      postMat.uniforms.texB.value  = mrt.texture[1];
+      postMat.uniforms.texID.value = mrt.texture[2];
+    });
+  </script>
+</body>
+</html>

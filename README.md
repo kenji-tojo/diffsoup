@@ -123,6 +123,23 @@ python3 -m http.server 8080 --bind 0.0.0.0
 
 Use the dropdown in the top-left corner to switch between exported scenes. To find your LAN IP, run `hostname -I` on Linux or `ifconfig | grep inet` on macOS.
 
+### Web Benchmark
+
+`web/benchmark.html` loads all 14 models onto a grid and runs a deterministic FPS benchmark using a Fibonacci-lattice camera trajectory. It requires the pre-exported scene data in `datasets/ours_mobile_results/`.
+
+**Step 1: Start a local server**
+
+```bash
+cd web
+python3 -m http.server 8080 --bind 0.0.0.0
+```
+
+**Step 2: Open in a browser**
+
+- Phone (same network): `http://<your-lan-ip>:8080/benchmark.html`
+
+Press **Start** to begin. Results (per-pose FPS, camera matrices, screenshots) are exported as a JSON file when the run finishes.
+
 ## Citation
 
 ```bibtex
