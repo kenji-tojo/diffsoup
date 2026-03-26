@@ -743,7 +743,8 @@ void Viewer::draw_gui() {
     ImGui::ColorEdit3("Background", m_options.background);
 
     ImGui::SliderFloat("FOV", &m_camera->fov_y_deg, 10.f, 120.f);
-    ImGui::SliderFloat("Distance", &m_camera->distance, 0.01f, 50.f, "%.2f", ImGuiSliderFlags_Logarithmic);
+    ImGui::SliderFloat("Near clip", &m_camera->near_clip, 0.01f, 50.f, "%.2f", ImGuiSliderFlags_Logarithmic);
+    ImGui::SliderFloat("Far clip", &m_camera->far_clip, 1.f, 1000.f, "%.1f", ImGuiSliderFlags_Logarithmic);
 
     if (!m_output_dir.empty() && ImGui::Button("Save screenshot")) {
         int w = m_camera->width, h = m_camera->height;

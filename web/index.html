@@ -32,6 +32,9 @@
       color: #eee;
       cursor: pointer;
     }
+    #controls input[type=range] {
+      width: 100px; cursor: pointer; accent-color: #888;
+    }
     #controls select { min-width: 120px; }
     #controls input[type=color] {
       width: 32px; height: 24px; padding: 1px 2px;
@@ -71,6 +74,21 @@
     <div class="row">
       <span style="font-size:11px; color:#999;">bg</span>
       <input type="color" id="bg-picker" value="#000000" />
+    </div>
+    <div class="row">
+      <span style="font-size:11px; color:#999;">fov</span>
+      <input type="range" id="fov-slider" min="10" max="120" step="1" value="40" />
+      <span class="info" id="fov-val">40</span>
+    </div>
+    <div class="row">
+      <span style="font-size:11px; color:#999;">near</span>
+      <input type="range" id="near-slider" min="0.01" max="50" step="0.01" value="4" />
+      <span class="info" id="near-val">4.00</span>
+    </div>
+    <div class="row">
+      <span style="font-size:11px; color:#999;">far</span>
+      <input type="range" id="far-slider" min="1" max="1000" step="1" value="100" />
+      <span class="info" id="far-val">100</span>
     </div>
     <div class="info" id="status">Initialising…</div>
   </div>
@@ -330,6 +348,29 @@
       const g = parseInt(h.slice(3,5),16)/255;
       const b = parseInt(h.slice(5,7),16)/255;
       setBgColor(r, g, b);
+    });
+
+    const fovSlider  = document.getElementById('fov-slider');
+    const nearSlider = document.getElementById('near-slider');
+    const farSlider  = document.getElementById('far-slider');
+    const fovVal  = document.getElementById('fov-val');
+    const nearVal = document.getElementById('near-val');
+    const farVal  = document.getElementById('far-val');
+
+    fovSlider.addEventListener('input', () => {
+      orbit.fovDeg = parseFloat(fovSlider.value);
+      fovVal.textContent = fovSlider.value;
+      orbit.update();
+    });
+    nearSlider.addEventListener('input', () => {
+      orbit.nearClip = parseFloat(nearSlider.value);
+      nearVal.textContent = parseFloat(nearSlider.value).toFixed(2);
+      orbit.update();
+    });
+    farSlider.addEventListener('input', () => {
+      orbit.farClip = parseFloat(farSlider.value);
+      farVal.textContent = farSlider.value;
+      orbit.update();
     });
 
     // ---- LUT loader ----
