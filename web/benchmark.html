@@ -69,7 +69,7 @@
   <div class="overlay" id="overlay">Loading meshes + LUTs…</div>
 
   <div class="bench" id="benchUI">
-    <h3>Benchmark (reproducible)</h3>
+    <h3>Mobile Benchmark</h3>
     <div class="row"><label>Poses</label><input id="benchPoses" type="number" value="30" min="1" max="500" /></div>
     <div class="row"><label>Warmup</label><input id="benchWarmup" type="number" value="30" min="0" max="600" /></div>
     <div class="row"><label>Measure</label><input id="benchMeasure" type="number" value="120" min="1" max="2000" /></div>
@@ -108,7 +108,7 @@
     // ================================================================
     //  Scene configuration (paper Table X)
     // ================================================================
-    const DATA_ROOT  = '../datasets/ours_mobile_results';
+    const DATA_ROOT  = 'data/ours_mobile_results';
 
     const model_list  = ["chair", "drums", "mic", "ship", "ficus", "hotdog", "lego", "materials", "fernvase", "pug", "kitten", "khady", "horse", "woolly"];
     const model_scale = [    1.2,     1.2,   1.5,    1.5,     1.2,      1.5,    1.2,         1.2,        1.2,   2.0,      1.2,     1.2,     2.0,     2.25];
@@ -699,13 +699,13 @@
     async function loadModel(name, modelIndex) {
       const base = `${DATA_ROOT}/${name}`;
 
-      const tri0 = await loadNearestClamp(`${base}/tri_lut0.png`);
+      const tri0 = await loadNearestClamp(`${base}/lut0.png`);
       await tick();
-      const tri1 = await loadNearestClamp(`${base}/tri_lut1.png`);
+      const tri1 = await loadNearestClamp(`${base}/lut1.png`);
       await tick();
 
       const geometry = await new Promise((resolve, reject) => {
-        plyLoader.load(`${base}/soup.ply`, (g) => {
+        plyLoader.load(`${base}/mesh.ply`, (g) => {
           const geo = g.index ? g.toNonIndexed() : g;
           if (!geo.getAttribute('normal')) geo.computeVertexNormals();
           geo.center();

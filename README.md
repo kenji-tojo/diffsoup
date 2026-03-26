@@ -123,22 +123,33 @@ python3 -m http.server 8080 --bind 0.0.0.0
 
 Use the dropdown in the top-left corner to switch between exported scenes. To find your LAN IP, run `hostname -I` on Linux or `ifconfig | grep inet` on macOS.
 
-### Web Benchmark
+### Mobile Benchmark
 
-`web/benchmark.html` loads all 14 models onto a grid and runs a deterministic FPS benchmark using a Fibonacci-lattice camera trajectory. It requires the pre-exported scene data in `datasets/ours_mobile_results/`.
+`web/benchmark.html` loads all 14 models onto a grid and runs a deterministic FPS benchmark on a phone using a Fibonacci-lattice camera trajectory. It requires the pre-exported scene data in `web/data/ours_mobile_results/`.
 
-**Step 1: Start a local server**
+**Step 1: Start a local server on your machine**
 
 ```bash
 cd web
 python3 -m http.server 8080 --bind 0.0.0.0
 ```
 
-**Step 2: Open in a browser**
+**Step 2: Open on your phone**
 
-- Phone (same network): `http://<your-lan-ip>:8080/benchmark.html`
+Navigate to `http://<your-lan-ip>:8080/benchmark.html` on a phone connected to the same network. To find your LAN IP, run `hostname -I` on Linux or `ifconfig | grep inet` on macOS.
 
-Press **Start** to begin. Results (per-pose FPS, camera matrices, screenshots) are exported as a JSON file when the run finishes.
+For reproducibility, hold the phone in landscape orientation (width > height) during the benchmark.
+
+![Mobile benchmark screenshot](picks/mobile_pose_002.png)
+
+Press **Start** to begin. Results (per-pose FPS, camera matrices, screenshots) are exported as a JSON file when the run finishes. To extract human-readable outputs from the JSON:
+
+```bash
+python3 examples/07_extract_bench.py \
+    --input benchmark_diffsoup_30poses.json
+```
+
+This produces `summary.json` (FPS statistics), `summary.csv` (per-pose data), and decoded screenshots in `images/`.
 
 ## Citation
 

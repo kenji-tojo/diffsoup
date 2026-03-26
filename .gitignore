@@ -209,4 +209,5 @@ __marimo__/
 # Repo-specific ignores
 datasets/
 results/
+web/data/
 **.DS_Store
