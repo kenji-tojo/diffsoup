@@ -69,7 +69,7 @@ void OrbitCamera::drag_update(float x, float y) {
         const float speed = kPanSpeed * distance;
         const glm::vec3 right{m_view[0][0], m_view[1][0], m_view[2][0]};
         const glm::vec3 up   {m_view[0][1], m_view[1][1], m_view[2][1]};
-        target = m_drag_target + right * dx * speed - up * dy * speed;
+        target = m_drag_target - right * dx * speed + up * dy * speed;
     } else {
         yaw   = m_drag_yaw   + dx * kOrbitSpeed;
         pitch = m_drag_pitch + dy * kOrbitSpeed;

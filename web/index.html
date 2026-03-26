@@ -123,9 +123,9 @@
         this.distance = 6;
         this.yaw      = 0;
         this.pitch    = 0.35;
-        this.fovDeg   = 60;
-        this.nearClip = 3;
-        this.farClip  = 1000;
+        this.fovDeg   = 40;
+        this.nearClip = 4;
+        this.farClip  = 100;
 
         this._dragging = false;
         this._panning  = false;
@@ -164,8 +164,8 @@
             const right = new THREE.Vector3(ve[0], ve[4], ve[8]);
             const up    = new THREE.Vector3(ve[1], ve[5], ve[9]);
             this.target.copy(this._dragTarget)
-              .addScaledVector(right, dx * speed)
-              .addScaledVector(up, -dy * speed);
+              .addScaledVector(right, -dx * speed)
+              .addScaledVector(up, dy * speed);
           } else {
             this.yaw   = this._dragYaw   + dx * ORBIT_SPEED;
             this.pitch = this._dragPitch  + dy * ORBIT_SPEED;
@@ -227,8 +227,8 @@
             const right = new THREE.Vector3(ve[0], ve[4], ve[8]);
             const up    = new THREE.Vector3(ve[1], ve[5], ve[9]);
             this.target.copy(this._dragTarget)
-              .addScaledVector(right, (mx - this._touchMid0[0]) * speed)
-              .addScaledVector(up, -(my - this._touchMid0[1]) * speed);
+              .addScaledVector(right, -(mx - this._touchMid0[0]) * speed)
+              .addScaledVector(up, (my - this._touchMid0[1]) * speed);
             this.update();
           }
         }, { passive: false });
