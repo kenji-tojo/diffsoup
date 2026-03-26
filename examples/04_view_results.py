@@ -6,8 +6,8 @@
 #   python examples/04_view_results.py --ckpt results/01_mip360/kitchen/final_params.pt
 #   python examples/04_view_results.py --ckpt ... --up 0 1 0
 #
-# Dependencies:
-#   pip install diffsoupviewer numpy torch
+# Dependencies (beyond diffsoupviewer):
+#   pip install numpy torch
 
 from __future__ import annotations
 

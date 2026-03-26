@@ -22,8 +22,8 @@
 #       --scene_root ./datasets/nerf_synthetic/lego \
 #       --dataset_type synthetic --downscale 2 --no_png_suffix
 #
-# Dependencies:
-#   pip install diffsoupviewer numpy torch
+# Dependencies (beyond diffsoupviewer):
+#   pip install numpy torch
 
 from __future__ import annotations
 
