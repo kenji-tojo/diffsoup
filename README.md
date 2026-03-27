@@ -5,7 +5,7 @@
 
 **CVPR 2026**
 
-[Project Page](TBD) | [Paper](TBD) | [Video](TBD)
+[Project Page (TBD)](https://github.com/kenji-tojo/diffsoup) | [Paper (TBD)](https://github.com/kenji-tojo/diffsoup) | [Video (TBD)](https://github.com/kenji-tojo/diffsoup)
 
 ## Tested Environment
 
