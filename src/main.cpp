@@ -169,25 +169,6 @@ NB_MODULE(_core, m)
         );
     }, "Evaluate order-2 spherical-harmonic basis on per-pixel view directions.");
 
-    m.def("encode_view_dir_freq", [](
-        nb::ndarray<float, nb::pytorch, nb::shape<-1, -1, -1, 4>, nb::c_contig> rast,
-        nb::ndarray<float, nb::pytorch, nb::shape<-1, 4, 4>,      nb::c_contig> inv_mvp,
-        float freq,
-        nb::ndarray<float, nb::pytorch, nb::shape<-1, -1, -1, 9>, nb::c_contig> encoding,
-        float vmf_kappa,
-        nb::ndarray<float, nb::pytorch, nb::shape<-1, -1, -1, 2>, nb::c_contig> vmf_samples
-    ) {
-        const int B = static_cast<int>(rast.shape(0));
-        const int H = static_cast<int>(rast.shape(1));
-        const int W = static_cast<int>(rast.shape(2));
-
-        ds::cuda::encode_view_dir_freq(
-            B, H, W, rast.data(), inv_mvp.data(),
-            freq, encoding.data(),
-            vmf_kappa, vmf_samples.size() > 0 ? vmf_samples.data() : nullptr
-        );
-    }, "Sinusoidal (frequency) encoding of per-pixel view directions.");
-
     // ── Multi-resolution triangle features ──────────────────────────
 
     m.def("multires_triangle_alpha", [](

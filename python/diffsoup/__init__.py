@@ -12,7 +12,6 @@ from .rasterize import (
     edge_grad,
     opacity_aux_loss,
     encode_view_dir_sh2,
-    encode_view_dir_freq,
     count_triangle_ids,
 )
 

@@ -341,45 +341,6 @@ def encode_view_dir_sh2(
     return encoding
 
 
-def encode_view_dir_freq(
-    rast: torch.Tensor,      # (B, H, W, 4)
-    inv_mvp: torch.Tensor,   # (B, 4, 4)
-    freq: float,
-    vmf_kappa: float = -1.0,
-) -> torch.Tensor:
-    """Sinusoidal (frequency) encoding of per-pixel view directions.
-
-    Args:
-        rast:      Rasterisation output ``(B, H, W, 4)``, float32 CUDA.
-        inv_mvp:   Inverse MVP transforms ``(B, 4, 4)``, float32 CUDA.
-        freq:      Base frequency multiplier.
-        vmf_kappa: If positive, apply von-Mises–Fisher jitter with this
-                   concentration parameter (negative disables).
-
-    Returns:
-        encoding: ``(B, H, W, 9)`` float32 CUDA.
-    """
-    B, H, W, _ = rast.shape
-    dev = rast.device
-
-    assert rast.shape == (B, H, W, 4) and rast.is_contiguous() and rast.dtype == torch.float32
-    assert inv_mvp.shape == (B, 4, 4) and inv_mvp.is_contiguous() and inv_mvp.dtype == torch.float32
-    assert rast.is_cuda and inv_mvp.device == dev
-
-    encoding = torch.zeros(B, H, W, 9, dtype=torch.float32, device=dev)
-
-    if vmf_kappa > 0.0:
-        vmf_samples = torch.rand(B, H, W, 2, dtype=torch.float32, device=dev)
-    else:
-        vmf_samples = torch.empty(0, 0, 0, 2, dtype=torch.float32, device=dev)
-
-    _core.encode_view_dir_freq(
-        rast, inv_mvp, float(freq), encoding,
-        float(vmf_kappa), vmf_samples,
-    )
-    return encoding
-
-
 # ---------------------------------------------------------------------------
 #  Utilities
 # ---------------------------------------------------------------------------

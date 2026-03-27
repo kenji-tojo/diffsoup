@@ -67,7 +67,7 @@ Each script saves a checkpoint (`final_params.pt`), rendered images, and test me
 View a trained checkpoint with the native OpenGL viewer:
 
 ```bash
-pip3 install diffsoupviewer
+pip3 install -v viewer/
 
 python3 examples/04_view_results.py --ckpt results/01_mip360/kitchen/final_params.pt
 ```

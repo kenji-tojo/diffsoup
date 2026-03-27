@@ -12,6 +12,10 @@ class VectorAdam(torch.optim.Optimizer):
     dimension so that all components share a single adaptive learning rate.
     This prevents axis-aligned bias in the updates.
 
+    Based on the VectorAdam optimiser introduced in:
+        Ling, S. Z., Sharp, N., and Jacobson, A., "VectorAdam for Rotation
+        Equivariant Geometry Optimization," NeurIPS 2022.
+
     Args:
         params: Iterable of parameters to optimise.
         lr: Learning rate (default: 1e-3).
