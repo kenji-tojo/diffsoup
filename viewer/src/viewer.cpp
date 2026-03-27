@@ -16,20 +16,12 @@
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
 
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb/stb_image_write.h"
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Write a binary PPM (P6) screenshot from RGBA pixels.
-static bool write_ppm(const char* path, int w, int h,
-                      const unsigned char* rgba) {
-    std::ofstream f(path, std::ios::binary);
-    if (!f) return false;
-    f << "P6\n" << w << ' ' << h << "\n255\n";
-    for (int i = 0; i < w * h; ++i)
-        f.write(reinterpret_cast<const char*>(rgba + i * 4), 3);
-    return f.good();
-}
 
 static void check_gl(const char* call) {
     GLenum e;
@@ -753,7 +745,9 @@ void Viewer::draw_gui() {
         for (int row = 0; row < h; ++row)
             std::memcpy(&flipped[row * w * 4],
                         &px[(h - 1 - row) * w * 4], size_t(w) * 4);
-        write_ppm((m_output_dir + "screenshot.ppm").c_str(), w, h, flipped.data());
+        std::string shot_path = m_output_dir + "screenshot.png";
+        stbi_write_png(shot_path.c_str(), w, h, 4, flipped.data(), w * 4);
+        std::cout << "[viewer] saved " << shot_path << '\n';
     }
 
     ImGui::End();
@@ -949,9 +943,10 @@ void Viewer::launch_benchmark(int width, int height,
                 std::memcpy(&flipped[row*width*4],
                             &px[(height-1-row)*width*4], size_t(width)*4);
             char path[512];
-            std::snprintf(path, sizeof(path), "%sscreenshots/benchmark_%05d.ppm",
+            std::snprintf(path, sizeof(path), "%sscreenshots/benchmark_%05d.png",
                           m_output_dir.c_str(), i);
-            write_ppm(path, width, height, flipped.data());
+            stbi_write_png(path, width, height, 4, flipped.data(), width * 4);
+            std::cout << "[viewer] saved " << path << '\n';
         }
     }
 

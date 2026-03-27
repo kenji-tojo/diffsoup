@@ -110,7 +110,7 @@ set_target_properties(_core PROPERTIES
     CXX_STANDARD_REQUIRED YES
     CXX_EXTENSIONS        NO)
 
-target_include_directories(_core PRIVATE src)
+target_include_directories(_core PRIVATE src third_party)
 
 target_link_libraries(_core PRIVATE
     glfw
