@@ -168,7 +168,7 @@ Navigate to `http://<your-lan-ip>:8080/benchmark.html` on a phone connected to t
 
 For reproducibility, hold the phone in landscape orientation (width > height) during the benchmark.
 
-![Mobile benchmark screenshot](picks/mobile_pose_002.png)
+![Mobile benchmark screenshot](pics/mobile_pose_002.png)
 
 Press **Start** to begin. Results (per-pose FPS, camera matrices, screenshots) are exported as a JSON file when the run finishes. To extract human-readable outputs from the JSON:
 
