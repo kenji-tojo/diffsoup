@@ -5,7 +5,9 @@
 
 **CVPR 2026**
 
-[Project Page (TBD)](https://github.com/kenji-tojo/diffsoup) | [Paper (TBD)](https://github.com/kenji-tojo/diffsoup) | [Video (TBD)](https://github.com/kenji-tojo/diffsoup)
+[Project Page (TBD)](https://github.com/kenji-tojo/diffsoup) | [Paper](https://drive.google.com/file/d/1zp82kAB-IAe98sUn2ZKiHTqMJRdVW8lK/view?usp=sharing) | [Video](https://drive.google.com/file/d/1AszAuCFS0FS9ZRJgYd2E5os4jsm_lgg6/view?usp=sharing)
+
+> The paper and video will be uploaded to arXiv and YouTube soon. In the meantime, author-version copies are shared via Google Drive above.
 
 ## Tested Environment
 
@@ -42,6 +44,32 @@ Install the remaining dependencies:
 ```bash
 pip3 install -r requirements.txt
 ```
+
+## Datasets
+
+### Multi-View Datasets
+
+Download the following datasets from their official websites and extract them under `./datasets/`:
+
+| Dataset | Directory |
+|---|---|
+| [MipNeRF-360](https://jonbarron.info/mipnerf360/) | `datasets/360_v2/` |
+| [NeRF-Synthetic](https://www.matthewtancik.com/nerf) | `datasets/nerf_synthetic/` |
+| [Shelly](https://research.nvidia.com/labs/toronto-ai/adaptive-shells/) | `datasets/shelly_data_release/` |
+
+### MobileNeRF Meshes (for Initialization)
+
+To reproduce our experiments, we provide the MobileNeRF meshes used in the paper: [**Download (Google Drive)**](https://drive.google.com/file/d/1sTC2dMjICuNf3KlAUyCEltQH5TLqKqFH/view?usp=sharing)
+
+Extract the archive under `datasets/`. Each scene contains the original mesh (`shape.obj`) and a decimated version (`shape_15K.obj`) produced with MeshLab. These meshes are used as initialization in `examples/02_synthetic.py`.
+
+> **Note:** If you want to perform a new comparison against MobileNeRF, you should re-run their method yourself to ensure a fair comparison. The provided meshes are only meant to reproduce the experiments in our paper. For initialization with further reduced face counts, you can apply MeshLab's Quadric Edge Collapse Decimation to the original `shape.obj` (e.g. to produce `shape_5K.obj`).
+
+### Pre-Computed Results (for Mobile Benchmark)
+
+We provide our pre-computed results for all models on NeRF-Synthetic and Shelly: [**Download (Google Drive)**](https://drive.google.com/file/d/1rAElfG4vlAR9t1rX6QTt3GgZp0T5qOz2/view?usp=sharing)
+
+Extract the archive under `web/data/`. These are required to run the [Mobile Benchmark](#mobile-benchmark).
 
 ## Getting Started
 
