@@ -64,7 +64,7 @@ Each script saves a checkpoint (`final_params.pt`), rendered images, and test me
 
 ### Interactive Viewer
 
-View a trained checkpoint with the native OpenGL viewer:
+View a trained checkpoint with the native OpenGL viewer. The viewer has no CUDA dependency and can be installed on any machine (e.g. a laptop) with OpenGL support:
 
 ```bash
 pip3 install -v viewer/
