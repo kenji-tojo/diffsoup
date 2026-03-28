@@ -5,7 +5,7 @@ Official code release for the paper *DiffSoup: Direct Differentiable Rasterizati
 
 [Kenji Tojo](https://kenji-tojo.github.io/), [Bernd Bickel](https://berndbickel.com/about-me), [Nobuyuki Umetani](https://cgenglab.github.io/en/authors/admin/)
 
-[Project Page (TBD)](https://github.com/kenji-tojo/diffsoup) | [Paper](https://drive.google.com/file/d/1zp82kAB-IAe98sUn2ZKiHTqMJRdVW8lK/view?usp=sharing) | [Video](https://drive.google.com/file/d/1AszAuCFS0FS9ZRJgYd2E5os4jsm_lgg6/view?usp=sharing)
+[Project Page](https://kenji-tojo.github.io/publications/diffsoup/) | [Paper](https://drive.google.com/file/d/1zp82kAB-IAe98sUn2ZKiHTqMJRdVW8lK/view?usp=sharing) | [Video](https://drive.google.com/file/d/1AszAuCFS0FS9ZRJgYd2E5os4jsm_lgg6/view?usp=sharing)
 
 > The paper will be uploaded to arXiv soon. In the meantime, author-version copies are shared via Google Drive above.
 
