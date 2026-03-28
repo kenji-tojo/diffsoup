@@ -1,11 +1,9 @@
-# DiffSoup
-### Direct Differentiable Rasterization of Triangle Soup for Extreme Radiance Field Simplification
+# DiffSoup [CVPR 2026]
+Official code release for the paper *DiffSoup: Direct Differentiable Rasterization of Triangle Soup for Extreme Radiance Field Simplification*
 
 <img src="pics/teaser.jpg" alt="Teaser" width="60%">
 
 [Kenji Tojo](https://kenji-tojo.github.io/), [Bernd Bickel](https://berndbickel.com/about-me), [Nobuyuki Umetani](https://cgenglab.github.io/en/authors/admin/)
-
-**CVPR 2026**
 
 [Project Page (TBD)](https://github.com/kenji-tojo/diffsoup) | [Paper](https://drive.google.com/file/d/1zp82kAB-IAe98sUn2ZKiHTqMJRdVW8lK/view?usp=sharing) | [Video](https://drive.google.com/file/d/1AszAuCFS0FS9ZRJgYd2E5os4jsm_lgg6/view?usp=sharing)
 
