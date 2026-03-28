@@ -1,7 +1,7 @@
 # DiffSoup
 ### Direct Differentiable Rasterization of Triangle Soup for Extreme Radiance Field Simplification
 
-<img src="pics/teaser.jpg" alt="Teaser" width="80%">
+<img src="pics/teaser.jpg" alt="Teaser" width="60%">
 
 [Kenji Tojo](https://kenji-tojo.github.io/), [Bernd Bickel](https://berndbickel.com/about-me), [Nobuyuki Umetani](https://cgenglab.github.io/en/authors/admin/)
 
@@ -170,7 +170,7 @@ Navigate to `http://<your-lan-ip>:8080/benchmark.html` on a phone connected to t
 
 For reproducibility, hold the phone in landscape orientation (width > height) during the benchmark.
 
-<img src="pics/mobile_pose_002.png" alt="Mobile benchmark screenshot" width="80%">
+<img src="pics/mobile_pose_002.png" alt="Mobile benchmark screenshot" width="70%">
 
 Press **Start** to begin. Results (per-pose FPS, camera matrices, screenshots) are exported as a JSON file when the run finishes. To extract human-readable outputs from the JSON:
 
