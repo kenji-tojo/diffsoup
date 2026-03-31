@@ -7,6 +7,12 @@ Official code release for the paper *DiffSoup: Direct Differentiable Rasterizati
 
 [Project Page](https://kenji-tojo.github.io/publications/diffsoup/) | [Paper](https://arxiv.org/abs/2603.27151) | [Video](https://drive.google.com/file/d/1AszAuCFS0FS9ZRJgYd2E5os4jsm_lgg6/view?usp=sharing)
 
+If you find this work useful, please [cite our paper](#citation).
+
+## Abstract
+
+Recent advances in radiance field reconstruction, such as 3D Gaussian splatting, enable real-time rendering with high visual fidelity on powerful graphics hardware. However, efficient online transmission and rendering across diverse platforms requires drastic model simplification. DiffSoup represents radiance fields as a soup (i.e., a highly unstructured set) of a small number of triangles with neural textures and binary opacity. We show that this binary opacity is directly differentiable via stochastic opacity masking, enabling stable training without smooth rasterization. DiffSoup can be rasterized using standard depth testing, enabling seamless integration into traditional graphics pipelines and interactive rendering on consumer-grade laptops and mobile devices.
+
 ## Tested Environment
 
 - Ubuntu 22.04 LTS
